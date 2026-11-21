@@ -1,0 +1,6 @@
+{
+  "name": "RoundMacroController V2",
+  "description": "ESP32-S3 (Guition JC3636W518C) 360x360 원형 터치 디스플레이 기반 Windows USB 매크로 컨트롤러 통합 관리 프로그램 및 PlatformIO 펌웨어",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

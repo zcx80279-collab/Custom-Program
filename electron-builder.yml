@@ -1,0 +1,25 @@
+appId: com.roundmacrocontroller.v2
+productName: RoundMacroController V2
+copyright: Copyright © 2026 RoundMacroController V2
+directories:
+  output: release
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+asarUnpack:
+  - "**/node_modules/@serialport/**"
+  - "**/node_modules/serialport/**"
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  requestedExecutionLevel: asInvoker
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: RoundMacroController V2
+  uninstallDisplayName: RoundMacroController V2
