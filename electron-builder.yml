@@ -16,6 +16,7 @@ win:
       arch:
         - x64
   requestedExecutionLevel: asInvoker
+publish: null
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

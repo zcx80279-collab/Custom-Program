@@ -21,7 +21,7 @@ import type {
 const api: RoundMacroDesktopAPI = {
   runtime: 'electron-windows',
   platform: process.platform,
-  appVersion: '2.1.0',
+  appVersion: '2.2.0',
   device: {
     listPorts: () => ipcRenderer.invoke('rmc:device:listPorts'),
     connect: (portPath: string) => ipcRenderer.invoke('rmc:device:connect', portPath),

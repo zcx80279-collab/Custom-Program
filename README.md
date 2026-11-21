@@ -49,16 +49,18 @@ npm run dev
 - Chromium 기반 브라우저에서는 Web Serial API(`navigator.serial`)를 통해 실제 ESP32-S3 USB CDC 장치 연결도 시도할 수 있습니다.
 - 실제 기기가 연결되지 않은 상태에서는 가상 기기를 연결됨으로 표시하지 않습니다.
 
-### B. Windows 데스크톱(Electron) 빌드 및 설치 파일 생성 (외부 Windows PC)
-1. Node.js 20 LTS 이상 및 Windows Build Tools를 준비합니다.
-2. `electron/package.electron.json`의 `dependencies`(`serialport`)와 `devDependencies`(`electron`, `electron-builder`, `cross-env`)를 로컬 Windows 환경에 설치합니다.
-3. 렌더러 및 Electron 메인 컴파일 후 NSIS 설치 파일을 생성합니다.
+### B. Windows 데스크톱(Electron) 빌드 및 설치 파일 생성
+1. **로컬 Windows PC에서 빌드 (Windows 10/11 x64, Node.js 20 LTS 이상)**:
 ```bash
-npm run build
-npx tsc -p electron/tsconfig.json
-npx electron-builder --win nsis --config electron-builder.yml
+npm install
+npm run dist:win
 ```
-- 생성물: `release/RoundMacroController V2 Setup 2.0.0.exe`
+- 실행 순서: Vite 렌더러 빌드(`dist/`) → Electron TypeScript 컴파일(`dist-electron/`) → `electron-builder` NSIS x64 패키징(`--publish never`)
+- 생성물: `release/RoundMacroController V2 Setup 2.2.0.exe`
+
+2. **GitHub Actions 수동 빌드**:
+- GitHub 저장소 **Actions → Build Windows Installer → Run workflow**를 수동 실행합니다.
+- 완료 후 해당 실행의 **Artifacts**에서 `RoundMacroController-V2-Windows-x64-Installer`(`.exe`)를 다운로드할 수 있습니다. (자동 릴리스 및 자동 업데이트는 비활성화되어 있습니다.)
 
 ### C. ESP32-S3 펌웨어 빌드, 패키징 및 USB 설치 (PlatformIO + Electron)
 1. VS Code PlatformIO IDE 또는 `pio` CLI를 설치합니다. (`esptool` 포함)

@@ -8,18 +8,32 @@
 
 ---
 
-## 1. 사전 준비
+## 1. 사전 준비 및 플래싱 도구 필수 요건
 
-### A. 플래싱 도구 (`esptool`) 준비
-Windows Electron 앱은 설치 실행 전 아래 순서로 ESP32-S3 플래싱 도구를 자동 탐색합니다.
+### A. 플래싱 도구(`esptool`) 및 실행 환경 요구사항
+Windows Electron 앱은 설치 실행 전 아래 우선순위로 ESP32-S3 검증 플래싱 도구를 자동 탐색합니다.
 1. 앱 내장 경로: `resources/tools/esptool.exe`
 2. 시스템 `PATH` 내 `esptool.exe` 또는 `esptool`
 3. PlatformIO 설치 환경: `%USERPROFILE%\.platformio\penv\Scripts\python.exe` + `tool-esptoolpy\esptool.py`
 4. 시스템 Python 환경: `py -3 -m esptool` 또는 `python.exe -m esptool`
 
-도구가 인식되지 않으면 다음 중 한 가지 방법으로 설치한 뒤 **기기 관리 → ESP32-S3 펌웨어 관리 → 도구 다시 확인**을 누르세요.
-- **방법 1 (권장)**: Python 3 설치 후 명령 프롬프트에서 `pip install esptool` 실행
-- **방법 2**: VS Code PlatformIO IDE를 설치하고 `firmware/` 프로젝트를 1회 빌드
+#### 필수 사전 요건 체크리스트
+- **운영체제 및 앱 런타임**: Windows 10/11 (x64) 환경의 **RoundMacroController V2 Windows Electron 앱** (`npm run dist:win`으로 빌드된 설치 버전 또는 `npm run dev:electron`).
+- **`esptool` 설치 (아래 중 1가지 필수)**:
+  - **방법 1 (권장 — Python CLI)**: Python 3.8 이상 설치(설치 시 `Add python.exe to PATH` 체크) 후 명령 프롬프트에서 실행:
+    ```bat
+    pip install esptool
+    python -m esptool version
+    ```
+  - **방법 2 (PlatformIO 사용)**: VS Code PlatformIO IDE 설치 후 `firmware/` 프로젝트를 1회 빌드하면 `%USERPROFILE%\.platformio\packages\tool-esptoolpy\esptool.py`가 자동 준비됩니다.
+  - **방법 3 (독립 실행 파일)**: Espressif 공식 `esptool.exe`를 Windows `PATH` 또는 앱 설치 폴더의 `resources\tools\esptool.exe`에 배치합니다.
+- **USB 드라이버 및 하드웨어 연결**:
+  - Windows 10/11 기본 내장 **USB 직렬 장치(`usbser.sys`)** 드라이버로 Espressif Native USB(`VID 0x303A`)가 자동 인식됩니다. 장치 관리자에서 노란색 느낌표가 표시될 경우 Windows Update 또는 Espressif IDF USB 드라이버를 설치하세요.
+  - 전원 전용 케이블이 아닌 **데이터 전송 지원 USB-C 케이블**을 사용하고, 무전원 USB 허브 대신 **PC 본체 USB 포트에 직접 연결**하는 것을 권장합니다.
+- **COM 포트 점유 해제**:
+  - Arduino IDE 시리얼 모니터, PlatformIO Serial Monitor, PuTTY, Tera Term 등 다른 시리얼 프로그램을 모두 종료한 뒤 진행하세요.
+
+도구 설치 후 앱의 **기기 관리 → ESP32-S3 펌웨어 관리 → 도구 다시 확인** 버튼을 눌러 `esptool` 인식 및 버전이 정상 표시되는지 확인합니다.
 
 ### B. 펌웨어 파일 빌드 및 패키지 생성
 PlatformIO CLI(`pio`)로 원하는 USB 모드 환경을 빌드합니다.
@@ -63,7 +77,52 @@ node firmware/scripts/package_firmware.mjs jc3636w518c_usb_composite
 
 ---
 
-## 3. ESP32-S3 USB 다운로드 모드 진입 방법
+## 3. 펌웨어 파일 무결성 검증 (`Verify File Integrity`)
+
+RoundMacroController V2는 손상된 바이너리나 타 보드용 펌웨어가 ESP32-S3에 기록되는 것을 방지하기 위해 **설치 전 검증**과 **기록 후 검증**을 모두 수행합니다.
+
+### A. 앱 내 자동 무결성 검증 항목
+1. **경로 및 확장자 검사**: Windows 기본 파일 선택 창에서 선택한 `.rmcfw.json` / `.bin` 파일(및 패키지/빌드 폴더 내부 이미지)만 허용하며, 상위 경로 이탈(`../`)을 차단합니다.
+2. **바이너리 헤더 및 대상 칩(`ESP32-S3`) 검증**:
+   - `bootloader.bin`, `firmware.bin`: 첫 바이트 매직 `0xE9` 및 오프셋 12의 칩 식별자 `chip_id === 9` (`ESP32-S3`) 확인. 타 MCU(ESP32 `chip_id=0`, ESP32-C3 등)용 이미지는 `WRONG_MCU` / `INVALID_FIRMWARE`로 거부됩니다.
+   - `partitions.bin`: 파티션 테이블 매직 `0xAA50` 확인.
+3. **파티션 크기 한도 검사**:
+   - `bootloader.bin` ≤ 32KB (`0x8000`), `partitions.bin` ≤ 4KB (`0x1000`), `boot_app0.bin` ≤ 8KB (`0x2000`), `firmware.bin` ≤ 3MB (`0x300000`).
+4. **SHA-256 체크섬 대조**: `.rmcfw.json` 패키지에 기록된 각 파일의 `sha256` 값과 실제 디스크 파일의 SHA-256 해시가 1바이트라도 다르면 플래싱을 차단합니다.
+5. **플래시 기록 후 검증**: `esptool write_flash` 완료 시 장치 플래시에서 계산된 `Hash of data verified` 응답을 확인합니다.
+
+### B. Windows PowerShell에서 수동 SHA-256 확인 방법
+배포받은 파일이나 직접 빌드한 바이너리를 수동으로 대조하려면 PowerShell에서 해시를 확인하고 `<환경명>.rmcfw.json`의 `sha256` 필드와 비교하세요.
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\firmware\dist\jc3636w518c_usb_composite\*.bin
+```
+
+---
+
+## 4. 플래싱 도구 사용 방법 (Desktop GUI / `esptool` CLI)
+
+### A. RoundMacroController V2 데스크톱 앱 GUI 사용 (권장)
+1. **기기 관리 → ESP32-S3 펌웨어 관리** 패널 상단에서 `esptool` 도구 인식 상태(`도구 다시 확인`)를 확인합니다.
+2. **USB 장치 검색**을 눌러 `Espressif ESP32-S3 (VID 0x303A)` COM 포트를 선택합니다.
+3. 설치 모드(`INITIAL_INSTALL` 또는 `UPDATE`), 리셋 방식(`default_reset` 또는 `no_reset`), 전송 속도(`460800 bps` 기본 / 안정성 우선 시 `115200 bps`)를 지정합니다.
+4. **펌웨어 선택**으로 `.rmcfw.json` 패키지 또는 `firmware.bin`을 불러온 뒤 모든 이미지의 검증 통과 여부를 확인합니다.
+5. 확인 체크박스 선택 후 실행 버튼을 누르면 앱이 일반 시리얼 통신을 일시 중지하고 `esptool` 진행률(%)과 실시간 로그를 표시합니다. (취소 필요 시 작업 중 취소 가능)
+
+### B. 명령줄(`esptool` CLI) 직접 실행 (고급/수동 복구용)
+앱 GUI 외에 터미널에서 직접 플래싱해야 하는 경우 아래 검증된 `JC3636W518C` 옵션을 사용합니다 (`COMx`를 실제 포트로 변경):
+
+```bat
+:: 1) 최초 설치 (4개 이미지 전체 기록, 다운로드 모드 진입 후 실행)
+python -m esptool --chip esp32s3 --port COMx --baud 460800 --before no_reset --after hard_reset write_flash -z --flash_mode qio --flash_freq 80m --flash_size 16MB 0x0000 bootloader.bin 0x8000 partitions.bin 0xe000 boot_app0.bin 0x10000 firmware.bin
+
+:: 2) 기존 펌웨어 업데이트 (앱 영역만 기록하여 0x610000 LittleFS 설정 보존)
+python -m esptool --chip esp32s3 --port COMx --baud 460800 --before default_reset --after hard_reset write_flash -z --flash_mode qio --flash_freq 80m --flash_size 16MB 0x10000 firmware.bin
+```
+
+---
+
+## 5. ESP32-S3 USB 다운로드 모드 진입 방법
 
 Guition JC3636W518C는 외부 USB-UART 변환 칩 없이 ESP32-S3 Native USB PHY(`GPIO 19/20`)를 사용합니다.
 - **최초 설치(빈 보드 / 비정상 펌웨어 상태)** 또는 **TinyUSB 복합 모드에서 자동 리셋이 동작하지 않는 경우** 반드시 아래 수동 다운로드 모드 절차를 따르세요.
@@ -84,13 +143,13 @@ Guition JC3636W518C는 외부 USB-UART 변환 칩 없이 ESP32-S3 Native USB PHY
 
 ---
 
-## 4. 최초 펌웨어 설치 절차 (`INITIAL_INSTALL`)
+## 6. 최초 펌웨어 설치 절차 (`INITIAL_INSTALL`)
 
 보드가 새 제품이거나, 기존 펌웨어가 없거나, Protocol V2 USB 통신이 응답하지 않을 때 사용합니다.
 단일 `firmware.bin`만으로는 초기 보드를 부팅할 수 없으므로 부트로더와 파티션 테이블이 반드시 함께 기록되어야 합니다.
 
 1. **수동 다운로드 모드 진입**
-   - 위 **3장(ESP32-S3 USB 다운로드 모드 진입 방법)**을 따라 보드를 ROM 다운로드 모드로 전환하고 데이터 전송용 USB-C 케이블로 PC에 연결합니다.
+   - 위 **5장(ESP32-S3 USB 다운로드 모드 진입 방법)**을 따라 보드를 ROM 다운로드 모드로 전환하고 데이터 전송용 USB-C 케이블로 PC에 연결합니다.
 2. **펌웨어 관리 화면 열기**
    - Windows Electron 앱 상단/좌측 **기기 관리** 탭으로 이동한 뒤 **ESP32-S3 펌웨어 관리** 패널을 엽니다.
 3. **포트 검색 및 선택**
@@ -115,7 +174,7 @@ Guition JC3636W518C는 외부 USB-UART 변환 칩 없이 ESP32-S3 Native USB PHY
 
 ---
 
-## 5. 기존 펌웨어 업데이트 절차 (`UPDATE`)
+## 7. 기존 펌웨어 업데이트 절차 (`UPDATE`)
 
 이미 RoundMacroController V2 펌웨어가 설치되어 정상 통신 중인 보드를 새 버전으로 업데이트할 때 사용합니다.
 PC에 저장된 프로필·매크로 설정 및 기기 내부 LittleFS(`0x610000`) 설정은 업데이트 과정에서 삭제되지 않습니다.
@@ -137,14 +196,14 @@ PC에 저장된 프로필·매크로 설정 및 기기 내부 LittleFS(`0x610000
 
 ---
 
-## 6. 설치 실패 시 오류별 복구 방법
+## 8. 설치 실패 시 오류별 복구 방법
 
 설치가 실패하면 프로그램이 임의로 자동 재시도를 반복하지 않고 정확한 오류 코드와 복구 단계를 표시합니다. 오류 내용을 확인한 뒤 아래 절차에 따라 복구하세요.
 
 | 오류 코드 | 원인 | 복구 절차 |
 | --- | --- | --- |
 | `TOOL_NOT_FOUND` | PC에 `esptool` / PlatformIO가 설치되지 않음 | `pip install esptool` 실행 또는 VS Code PlatformIO 설치 후 **도구 다시 확인** 클릭 |
-| `BOOTLOADER_CONNECT_FAILED` | 자동 리셋 실패 또는 보드가 다운로드 모드에 진입하지 못함 | **3장** 절차대로 `BOOT + RESET` 수동 다운로드 모드 진입 → **USB 장치 검색**으로 포트 재선택 → 리셋 방식을 **`no_reset`**으로 변경 후 재시도 |
+| `BOOTLOADER_CONNECT_FAILED` | 자동 리셋 실패 또는 보드가 다운로드 모드에 진입하지 못함 | **5장** 절차대로 `BOOT + RESET` 수동 다운로드 모드 진입 → **USB 장치 검색**으로 포트 재선택 → 리셋 방식을 **`no_reset`**으로 변경 후 재시도 |
 | `PORT_ACCESS_DENIED` | 다른 프로그램이 COM 포트를 점유 중임 | Arduino IDE, PlatformIO 시리얼 모니터, PuTTY 등 모든 시리얼 프로그램 종료 후 재시도 (필요 시 USB 재연결) |
 | `USB_DISCONNECTED_DURING_FLASH` | 플래싱 도중 케이블 접촉 불량 또는 전원 부족으로 연결 끊김 | 충전 전용이 아닌 데이터 지원 USB-C 케이블로 PC 본체 포트에 직결 → `BOOT + RESET` 수동 진입 → **최초 설치 (`INITIAL_INSTALL`)** 모드로 다시 기록 (속도 `115200 bps` 권장) |
 | `INVALID_FIRMWARE` / `WRONG_MCU` | 손상된 파일, SHA-256 불일치, ESP32-S3가 아닌 타 칩(`chip_id ≠ 9`)용 바이너리 | PlatformIO에서 `jc3636w518c_*` 환경으로 다시 빌드하거나 패키지를 재생성한 뒤 유효한 파일 선택 |
