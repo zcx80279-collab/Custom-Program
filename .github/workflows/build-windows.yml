@@ -21,7 +21,7 @@ jobs:
         shell: pwsh
         run: |
           if (Test-Path package-lock.json) {
-            npm ci
+            npm install
           } else {
             npm install
           }
