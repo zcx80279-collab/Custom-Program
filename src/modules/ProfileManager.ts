@@ -4,8 +4,9 @@ import {
   LayoutPreset,
   LogLevel,
   ProfileDefinition,
+  SlotTransitionMode,
 } from '../shared/types';
-import { createButtonsForLayout } from '../shared/defaults';
+import { createButtonsForLayout, createDefaultMacroSlots } from '../shared/defaults';
 import { DiagnosticsManager } from './DiagnosticsManager';
 
 export class ProfileManager {
@@ -27,6 +28,7 @@ export class ProfileManager {
     const cleanName = name.trim() || `새 프로필 ${config.profiles.length + 1}`;
     const now = new Date().toISOString();
     const id = `profile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const macroSlots = createDefaultMacroSlots(layout);
 
     const newProfile: ProfileDefinition = {
       id,
@@ -34,7 +36,9 @@ export class ProfileManager {
       description: description.trim(),
       layout,
       backgroundColor: '#0F172A',
-      buttons: createButtonsForLayout(layout),
+      macroSlots,
+      activeMacroSlotIndex: 1,
+      buttons: macroSlots[0].buttons,
       createdAt: now,
       updatedAt: now,
     };
@@ -78,11 +82,18 @@ export class ProfileManager {
 
     const now = new Date().toISOString();
     const newId = `profile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const clonedSlots = source.macroSlots.map((slot) => ({
+      ...slot,
+      buttons: slot.buttons.map((b) => ({ ...b, id: `${newId}-s${slot.slotIndex}-slot-${b.slotIndex}` })),
+    }));
+
     const copy: ProfileDefinition = {
       ...source,
       id: newId,
       name: `${source.name} (복사본)`,
-      buttons: source.buttons.map((b) => ({ ...b, id: `${newId}-slot-${b.slotIndex}` })),
+      macroSlots: clonedSlots,
+      activeMacroSlotIndex: source.activeMacroSlotIndex,
+      buttons: clonedSlots[source.activeMacroSlotIndex - 1].buttons,
       createdAt: now,
       updatedAt: now,
     };
@@ -111,6 +122,7 @@ export class ProfileManager {
       return { ok: false, config, error: '삭제할 프로필을 찾을 수 없습니다.' };
     }
 
+    const now = new Date().toISOString();
     const remaining = config.profiles.filter((p) => p.id !== profileId);
     const nextActiveId =
       config.activeProfileId === profileId ? remaining[0].id : config.activeProfileId;
@@ -123,7 +135,7 @@ export class ProfileManager {
         ...config,
         activeProfileId: nextActiveId,
         profiles: remaining,
-        lastModifiedAt: new Date().toISOString(),
+        lastModifiedAt: now,
       },
     };
   }
@@ -140,22 +152,81 @@ export class ProfileManager {
     };
   }
 
+  public switchMacroSlot(config: AppConfig, profileId: string, slotIndex: number): AppConfig {
+    if (slotIndex < 1 || slotIndex > 3) return config;
+    const now = new Date().toISOString();
+
+    return {
+      ...config,
+      profiles: config.profiles.map((p) => {
+        if (p.id !== profileId) return p;
+        const targetSlot = p.macroSlots.find((s) => s.slotIndex === slotIndex) ?? p.macroSlots[0];
+        return {
+          ...p,
+          activeMacroSlotIndex: slotIndex,
+          buttons: targetSlot.buttons,
+          updatedAt: now,
+        };
+      }),
+      lastModifiedAt: now,
+    };
+  }
+
+  public cycleMacroSlot(
+    config: AppConfig,
+    direction: 'NEXT' | 'PREV',
+    mode: SlotTransitionMode = SlotTransitionMode.CIRCULAR
+  ): AppConfig {
+    const activeProfile = this.getActiveProfile(config);
+    const currentIndex = activeProfile.activeMacroSlotIndex;
+    let nextIndex = currentIndex;
+
+    if (direction === 'NEXT') {
+      if (mode === SlotTransitionMode.CIRCULAR) {
+        nextIndex = (currentIndex % 3) + 1; // 1 -> 2 -> 3 -> 1
+      } else {
+        nextIndex = Math.min(3, currentIndex + 1); // 1 -> 2 -> 3 (stop at 3)
+      }
+    } else {
+      if (mode === SlotTransitionMode.CIRCULAR) {
+        nextIndex = currentIndex === 1 ? 3 : currentIndex - 1; // 3 -> 2 -> 1 -> 3
+      } else {
+        nextIndex = Math.max(1, currentIndex - 1); // 1 -> 1 -> 2 -> 3 (stop at 1)
+      }
+    }
+
+    if (nextIndex === currentIndex) return config;
+
+    this.diagnostics.log(
+      LogLevel.INFO,
+      'ProfileManager',
+      `매크로 슬롯 좌우 전환: 슬롯 ${currentIndex} -> 슬롯 ${nextIndex} (${mode})`
+    );
+
+    return this.switchMacroSlot(config, activeProfile.id, nextIndex);
+  }
+
   public changeProfileLayout(config: AppConfig, profileId: string, layout: LayoutPreset): AppConfig {
     const now = new Date().toISOString();
     this.diagnostics.log(LogLevel.INFO, 'ProfileManager', `프로필 레이아웃 변경: ${layout}`);
 
     return {
       ...config,
-      profiles: config.profiles.map((p) =>
-        p.id === profileId
-          ? {
-              ...p,
-              layout,
-              buttons: createButtonsForLayout(layout, p.buttons),
-              updatedAt: now,
-            }
-          : p
-      ),
+      profiles: config.profiles.map((p) => {
+        if (p.id !== profileId) return p;
+        const updatedSlots = p.macroSlots.map((slot) => ({
+          ...slot,
+          buttons: createButtonsForLayout(layout, slot.buttons),
+        }));
+        const activeSlot = updatedSlots[p.activeMacroSlotIndex - 1] ?? updatedSlots[0];
+        return {
+          ...p,
+          layout,
+          macroSlots: updatedSlots,
+          buttons: activeSlot.buttons,
+          updatedAt: now,
+        };
+      }),
       lastModifiedAt: now,
     };
   }
@@ -169,17 +240,24 @@ export class ProfileManager {
     const now = new Date().toISOString();
     return {
       ...config,
-      profiles: config.profiles.map((p) =>
-        p.id === profileId
-          ? {
-              ...p,
-              buttons: p.buttons.map((b) =>
-                b.slotIndex === slotIndex ? { ...b, ...patch } : b
-              ),
-              updatedAt: now,
-            }
-          : p
-      ),
+      profiles: config.profiles.map((p) => {
+        if (p.id !== profileId) return p;
+        const activeSlotIdx = p.activeMacroSlotIndex;
+        const updatedSlots = p.macroSlots.map((slot) => {
+          if (slot.slotIndex !== activeSlotIdx) return slot;
+          return {
+            ...slot,
+            buttons: slot.buttons.map((b) => (b.slotIndex === slotIndex ? { ...b, ...patch } : b)),
+          };
+        });
+        const currentActiveSlot = updatedSlots[activeSlotIdx - 1];
+        return {
+          ...p,
+          macroSlots: updatedSlots,
+          buttons: currentActiveSlot.buttons,
+          updatedAt: now,
+        };
+      }),
       lastModifiedAt: now,
     };
   }
@@ -191,10 +269,13 @@ export class ProfileManager {
     macroId: string | null
   ): AppConfig {
     const macro = macroId ? config.macros.find((m) => m.id === macroId) : null;
+    const activeProfile = config.profiles.find((p) => p.id === profileId) ?? config.profiles[0];
     this.diagnostics.log(
       LogLevel.INFO,
       'ProfileManager',
-      `슬롯 ${slotIndex} 매크로 할당: ${macro ? macro.name : '할당 해제'}`
+      `[슬롯 ${activeProfile?.activeMacroSlotIndex ?? 1}] 버튼 ${slotIndex} 매크로 할당: ${
+        macro ? macro.name : '할당 해제'
+      }`
     );
     return this.updateButton(config, profileId, slotIndex, { macroId });
   }

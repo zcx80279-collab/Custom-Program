@@ -12,6 +12,11 @@ export interface ButtonSlotGeometry {
   /** Center coordinates for label placement */
   labelX: number;
   labelY: number;
+  /** Center coordinates for squishy button bubble placement */
+  buttonX: number;
+  buttonY: number;
+  /** Visual half-size / radius of the squishy button bubble */
+  buttonRadius: number;
   /** For SECTOR buttons: start & end angles in degrees (-90 = 12 o'clock) */
   startAngleDeg?: number;
   endAngleDeg?: number;
@@ -32,7 +37,21 @@ export function getOuterSlotCount(layout: LayoutPreset): number {
 }
 
 export function getTotalSlotCount(layout: LayoutPreset): number {
-  return 1 + getOuterSlotCount(layout);
+  return getOuterSlotCount(layout);
+}
+
+function getSquishyDimensions(outerCount: number): {
+  ringRadius: number;
+  outerRadius: number;
+} {
+  if (outerCount === 4) {
+    return { ringRadius: 110, outerRadius: 48 };
+  }
+  if (outerCount === 8) {
+    return { ringRadius: 120, outerRadius: 36 };
+  }
+  // Default 6 outer buttons: 92px outer bubbles arranged in a ring
+  return { ringRadius: 115, outerRadius: 46 };
 }
 
 function degToRad(deg: number): number {
@@ -74,8 +93,7 @@ function buildAnnularSectorPath(
 }
 
 /**
- * Generates exact 360x360 circular slot geometries.
- * Mirrors the C++ hit-test geometry in firmware/src/touch_manager.cpp 1:1.
+ * Generates exact 360x360 circular slot geometries (outer ring buttons only, center button removed).
  */
 export function buildLayoutGeometry(layout: LayoutPreset): ButtonSlotGeometry[] {
   const outerCount = getOuterSlotCount(layout);
@@ -83,17 +101,9 @@ export function buildLayoutGeometry(layout: LayoutPreset): ButtonSlotGeometry[] 
   // Offset so sector 1 is centered cleanly at 12 o'clock (-90 deg)
   const baseStartDeg = -90 - sectorSweep / 2;
   const gapDeg = 3.2;
+  const { ringRadius, outerRadius } = getSquishyDimensions(outerCount);
 
-  const slots: ButtonSlotGeometry[] = [
-    {
-      slotIndex: 0,
-      kind: 'CENTER',
-      labelX: CENTER_X,
-      labelY: CENTER_Y,
-      svgPath: `M ${CENTER_X - CENTER_BUTTON_RADIUS} ${CENTER_Y} a ${CENTER_BUTTON_RADIUS} ${CENTER_BUTTON_RADIUS} 0 1 0 ${CENTER_BUTTON_RADIUS * 2} 0 a ${CENTER_BUTTON_RADIUS} ${CENTER_BUTTON_RADIUS} 0 1 0 -${CENTER_BUTTON_RADIUS * 2} 0`,
-    },
-  ];
-
+  const slots: ButtonSlotGeometry[] = [];
   const labelRadius = (INNER_RING_RADIUS + OUTER_RING_RADIUS) / 2;
 
   for (let i = 0; i < outerCount; i++) {
@@ -101,12 +111,16 @@ export function buildLayoutGeometry(layout: LayoutPreset): ButtonSlotGeometry[] 
     const endAngleDeg = startAngleDeg + sectorSweep;
     const midAngleDeg = (startAngleDeg + endAngleDeg) / 2;
     const labelPos = polarToCartesian(CENTER_X, CENTER_Y, labelRadius, midAngleDeg);
+    const bubblePos = polarToCartesian(CENTER_X, CENTER_Y, ringRadius, midAngleDeg);
 
     slots.push({
       slotIndex: i + 1,
       kind: 'SECTOR',
       labelX: labelPos.x,
       labelY: labelPos.y,
+      buttonX: bubblePos.x,
+      buttonY: bubblePos.y,
+      buttonRadius: outerRadius,
       startAngleDeg,
       endAngleDeg,
       svgPath: buildAnnularSectorPath(
@@ -125,23 +139,14 @@ export function buildLayoutGeometry(layout: LayoutPreset): ButtonSlotGeometry[] 
 }
 
 /**
- * Hit-tests a touch coordinate (x, y) on the 360x360 round display.
- * Identical mathematical formula implemented in ESP32-S3 TouchManager::hitTest().
+ * Hit-tests a touch coordinate (x, y) on the 360x360 round display (outer ring slots 1..N only).
  */
 export function hitTestCircularDisplay(x: number, y: number, layout: LayoutPreset): number | null {
   const dx = x - CENTER_X;
   const dy = y - CENTER_Y;
   const dist = Math.sqrt(dx * dx + dy * dy);
 
-  if (dist > DISPLAY_RADIUS) {
-    return null;
-  }
-
-  if (dist <= CENTER_BUTTON_RADIUS) {
-    return 0;
-  }
-
-  if (dist < INNER_RING_RADIUS || dist > OUTER_RING_RADIUS) {
+  if (dist > DISPLAY_RADIUS || dist < INNER_RING_RADIUS || dist > OUTER_RING_RADIUS) {
     return null;
   }
 
@@ -158,3 +163,4 @@ export function hitTestCircularDisplay(x: number, y: number, layout: LayoutPrese
 
   return Math.min(outerCount, Math.max(1, sectorIndex + 1));
 }
+

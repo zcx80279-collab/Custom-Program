@@ -6,6 +6,7 @@ import {
   HardDrive,
   Keyboard,
   Layers,
+  LayoutGrid,
   Send,
 } from 'lucide-react';
 import {
@@ -15,11 +16,13 @@ import {
   LayoutPreset,
   LogLevel,
   MacroDefinition,
+  SlotTransitionMode,
 } from './shared/types';
 import { createDefaultConfig } from './shared/defaults';
 import { DiagnosticsManager } from './modules/DiagnosticsManager';
 import { ConfigManager } from './modules/ConfigManager';
 import { ProfileManager } from './modules/ProfileManager';
+import { PresetDraft, PresetManager } from './modules/PresetManager';
 import { MacroEngine, MacroTestVisualEvent } from './modules/MacroEngine';
 import { DisplayManager } from './modules/DisplayManager';
 import { DeviceManager, DeviceSnapshot } from './modules/DeviceManager';
@@ -29,14 +32,16 @@ import { ButtonSlotInspector } from './components/ButtonSlotInspector';
 import { DevicePanel } from './components/DevicePanel';
 import { MacroEditorPanel } from './components/MacroEditorPanel';
 import { ProfilePanel } from './components/ProfilePanel';
+import { PresetPanel } from './components/PresetPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { DiagnosticsPanel } from './components/DiagnosticsPanel';
 import { ResetConfirmModal } from './components/ResetConfirmModal';
 
-type NavSection = 'preview' | 'device' | 'macros' | 'profiles' | 'config' | 'diagnostics';
+type NavSection = 'preview' | 'presets' | 'device' | 'macros' | 'profiles' | 'config' | 'diagnostics';
 
 const NAV_ITEMS: Array<{ id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { id: 'preview', label: '원형 화면 미리보기', icon: CircleDot },
+  { id: 'presets', label: '단축키 프리셋', icon: LayoutGrid },
   { id: 'device', label: '기기 관리', icon: Cpu },
   { id: 'macros', label: '매크로 편집', icon: Keyboard },
   { id: 'profiles', label: '프로필 관리', icon: Layers },
@@ -45,11 +50,12 @@ const NAV_ITEMS: Array<{ id: NavSection; label: string; icon: React.ComponentTyp
 ];
 
 export function App() {
-  // Instantiate the 6 separated domain modules once per application lifetime
+  // Instantiate the separated domain modules once per application lifetime
   const servicesRef = useRef<{
     diagnostics: DiagnosticsManager;
     configManager: ConfigManager;
     profileManager: ProfileManager;
+    presetManager: PresetManager;
     macroEngine: MacroEngine;
     displayManager: DisplayManager;
     deviceManager: DeviceManager;
@@ -61,6 +67,7 @@ export function App() {
       diagnostics,
       configManager: new ConfigManager(diagnostics),
       profileManager: new ProfileManager(diagnostics),
+      presetManager: new PresetManager(diagnostics),
       macroEngine: new MacroEngine(diagnostics),
       displayManager: new DisplayManager(diagnostics),
       deviceManager: new DeviceManager(diagnostics),
@@ -71,6 +78,7 @@ export function App() {
     diagnostics,
     configManager,
     profileManager,
+    presetManager,
     macroEngine,
     displayManager,
     deviceManager,
@@ -80,7 +88,7 @@ export function App() {
   const [config, setConfig] = useState<AppConfig>(() => createDefaultConfig());
   const [storageSource, setStorageSource] = useState<'ELECTRON_FS' | 'LOCAL_STORAGE' | 'DEFAULT'>('DEFAULT');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  const [selectedSlotIndex, setSelectedSlotIndex] = useState<number>(0);
+  const [selectedSlotIndex, setSelectedSlotIndex] = useState<number>(1);
 
   const [deviceSnapshot, setDeviceSnapshot] = useState<DeviceSnapshot>(() => deviceManager.getSnapshot());
   const [isTestMode, setIsTestMode] = useState<boolean>(() => macroEngine.isTestMode());
@@ -209,10 +217,25 @@ export function App() {
     [config, profileManager]
   );
 
+  const presets = useMemo(
+    () => presetManager.getPresets(config),
+    [config, presetManager]
+  );
+
+  const selectableMacros = useMemo(
+    () => presetManager.getSelectableMacros(config),
+    [config, presetManager]
+  );
+
+  const activePresetStatus = useMemo(
+    () => presetManager.getActivePresetStatus(config),
+    [config, presetManager]
+  );
+
   // Ensure selectedSlotIndex stays valid if layout changes
   useEffect(() => {
     const exists = activeProfile.buttons.some((b) => b.slotIndex === selectedSlotIndex);
-    if (!exists) setSelectedSlotIndex(0);
+    if (!exists) setSelectedSlotIndex(activeProfile.buttons[0]?.slotIndex ?? 1);
   }, [activeProfile, selectedSlotIndex]);
 
   const selectedButton =
@@ -225,6 +248,50 @@ export function App() {
   const mutateConfig = (next: AppConfig) => {
     setConfig(next);
     setHasUnsavedChanges(true);
+  };
+
+  const persistConfigImmediate = async (next: AppConfig) => {
+    setConfig(next);
+    const res = await configManager.save(next);
+    if (res.ok) {
+      setHasUnsavedChanges(false);
+      setStorageSource(window.roundMacroAPI ? 'ELECTRON_FS' : 'LOCAL_STORAGE');
+    } else {
+      setHasUnsavedChanges(true);
+      showToast('err', res.error ?? '설정 자동 저장에 실패했습니다.');
+    }
+    return res;
+  };
+
+  const handleApplyPreset = async (presetId: string) => {
+    const res = presetManager.applyPreset(config, presetId);
+    if (!res.ok || !res.preset) {
+      showToast('err', res.error ?? '프리셋을 적용하지 못했습니다.');
+      return;
+    }
+    await persistConfigImmediate(res.config);
+    showToast(
+      'ok',
+      `"${res.preset.name}" 프리셋을 프로필 "${activeProfile.name}"에 적용하고 저장했습니다.`
+    );
+  };
+
+  const handleExportPreset = (presetId: string) => {
+    const json = presetManager.exportPresetPackage(config, presetId);
+    const target = presets.find((p) => p.id === presetId);
+    if (!json || !target) {
+      showToast('err', '내보낼 프리셋을 찾지 못했습니다.');
+      return;
+    }
+    const safeFileName = target.name.replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40) || 'preset';
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `roundmacro-preset-${safeFileName}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('ok', `"${target.name}" 프리셋을 JSON 파일로 내보냈습니다.`);
   };
 
   const handleToggleTestMode = (enabled: boolean) => {
@@ -342,6 +409,15 @@ export function App() {
 
         <div className="hidden md:flex items-center gap-2 text-xs text-slate-500 truncate">
           <span>활성 프로필: {activeProfile.name}</span>
+          {activePresetStatus.preset && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className={activePresetStatus.isModified ? 'text-amber-700' : 'text-blue-700 font-medium'}>
+                프리셋: {activePresetStatus.preset.name}
+                {activePresetStatus.isModified ? ' (수정됨)' : ''}
+              </span>
+            </>
+          )}
           <span aria-hidden="true">·</span>
           <span className={isDeviceConnected ? 'text-green-700 font-medium' : 'text-slate-600'}>
             USB: {isDeviceConnected ? deviceSnapshot.deviceInfo?.deviceName ?? '연결됨' : '미연결'}
@@ -406,23 +482,54 @@ export function App() {
             })}
           </nav>
 
-          {/* Compact Profile Switcher inside Sidebar */}
-          <div className="pt-4 border-t border-slate-200 space-y-2">
-            <label htmlFor="sidebar-profile-select" className="block text-xs font-medium text-slate-500 px-1">
-              빠른 프로필 전환
-            </label>
-            <select
-              id="sidebar-profile-select"
-              value={config.activeProfileId}
-              onChange={(e) => mutateConfig(profileManager.switchProfile(config, e.target.value))}
-              className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-md bg-white text-slate-800 focus:outline-none focus:border-blue-500"
-            >
-              {config.profiles.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
+          {/* Compact Preset & Profile Switchers inside Sidebar */}
+          <div className="pt-4 border-t border-slate-200 space-y-2.5">
+            <div className="space-y-1">
+              <label htmlFor="sidebar-preset-select" className="block text-xs font-medium text-slate-500 px-1">
+                빠른 단축키 프리셋
+              </label>
+              <select
+                id="sidebar-preset-select"
+                value={activePresetStatus.preset?.id ?? ''}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    void handleApplyPreset(e.target.value);
+                  }
+                }}
+                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-md bg-white text-slate-800 focus:outline-none focus:border-blue-500"
+              >
+                <option value="">
+                  {activePresetStatus.preset ? '-- 프리셋 선택 --' : '미적용 (개별 설정)'}
                 </option>
-              ))}
-            </select>
+                {presets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.name}
+                    {activePresetStatus.preset?.id === preset.id && activePresetStatus.isModified
+                      ? ' (수정됨)'
+                      : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label htmlFor="sidebar-profile-select" className="block text-xs font-medium text-slate-500 px-1">
+                빠른 프로필 전환
+              </label>
+              <select
+                id="sidebar-profile-select"
+                value={config.activeProfileId}
+                onChange={(e) => mutateConfig(profileManager.switchProfile(config, e.target.value))}
+                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-md bg-white text-slate-800 focus:outline-none focus:border-blue-500"
+              >
+                {config.profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <button
               type="button"
               onClick={handleSavePcConfig}
@@ -457,11 +564,27 @@ export function App() {
                       원형 화면 미리보기 및 버튼 매핑
                     </h1>
                     <p className="text-sm text-slate-500 mt-0.5">
-                      360×360 원형 화면에서 버튼을 직접 클릭해 선택하고, 라벨과 매크로를 연결합니다.
+                      360×360 원형 화면에서 버튼을 직접 클릭해 선택하고, 라벨과 매크로·단축키 프리셋을 연결합니다.
                     </p>
                   </div>
-                  <div className="text-xs font-mono text-slate-500">
-                    대상 보드: Guition JC3636W518C (ESP32-S3R8)
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                    <span className={activePresetStatus.preset ? 'text-slate-700 font-medium' : ''}>
+                      적용 프리셋:{' '}
+                      {activePresetStatus.preset
+                        ? `${activePresetStatus.preset.name}${activePresetStatus.isModified ? ' (수정됨)' : ''}`
+                        : '미적용'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveNav('presets')}
+                      className="text-blue-600 hover:text-blue-800 font-medium whitespace-nowrap shrink-0"
+                    >
+                      프리셋 관리 열기
+                    </button>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono">
+                      대상 보드: Guition JC3636W518C (ESP32-S3R8)
+                    </span>
                   </div>
                 </div>
 
@@ -475,6 +598,18 @@ export function App() {
                       visualFeedback={visualFeedback}
                       onToggleTestMode={handleToggleTestMode}
                       onSelectSlot={setSelectedSlotIndex}
+                      onSwitchMacroSlot={(slotIdx) =>
+                        mutateConfig(profileManager.switchMacroSlot(config, activeProfile.id, slotIdx))
+                      }
+                      onCycleMacroSlot={(dir) =>
+                        mutateConfig(
+                          profileManager.cycleMacroSlot(
+                            config,
+                            dir,
+                            config.preferences?.slotTransitionMode ?? SlotTransitionMode.CIRCULAR
+                          )
+                        )
+                      }
                       onTriggerPreviewMacro={(slot, macro) => {
                         macroEngine.executeMacroOnPc(macro, { slotIndex: slot }).then((res) => {
                           if (res.isTestMode) {
@@ -519,11 +654,86 @@ export function App() {
                           profileManager.changeProfileLayout(config, activeProfile.id, layout)
                         )
                       }
+                      onSwitchMacroSlot={(profileId, slotIdx) =>
+                        mutateConfig(profileManager.switchMacroSlot(config, profileId, slotIdx))
+                      }
                       onJumpToMacroEditor={() => setActiveNav('macros')}
                     />
                   </div>
                 </div>
               </div>
+            )}
+
+            {/* Screen G: Shortcut Preset Management */}
+            {activeNav === 'presets' && (
+              <PresetPanel
+                presets={presets}
+                activePresetStatus={activePresetStatus}
+                activeProfile={activeProfile}
+                macros={config.macros}
+                selectableMacros={selectableMacros}
+                macroEngine={macroEngine}
+                onApplyPreset={(presetId) => {
+                  void handleApplyPreset(presetId);
+                }}
+                onCreatePreset={(draft: PresetDraft) => {
+                  const res = presetManager.createPreset(config, draft);
+                  if (res.ok && res.preset) {
+                    void persistConfigImmediate(res.config);
+                    showToast('ok', `사용자 프리셋 "${res.preset.name}"을 저장했습니다.`);
+                  }
+                  return { ok: res.ok, error: res.error };
+                }}
+                onSaveActiveAsPreset={(name, targetApp, description) => {
+                  const res = presetManager.createPresetFromActiveProfile(
+                    config,
+                    name,
+                    targetApp,
+                    description
+                  );
+                  if (res.ok && res.preset) {
+                    void persistConfigImmediate(res.config);
+                    showToast('ok', `현재 6버튼을 "${res.preset.name}" 프리셋으로 저장했습니다.`);
+                  }
+                  return { ok: res.ok, error: res.error };
+                }}
+                onUpdatePreset={(presetId, draft) => {
+                  const res = presetManager.updatePreset(config, presetId, draft);
+                  if (res.ok && res.preset) {
+                    void persistConfigImmediate(res.config);
+                    showToast('ok', `프리셋 "${res.preset.name}"을 수정 저장했습니다.`);
+                  }
+                  return { ok: res.ok, error: res.error };
+                }}
+                onDuplicatePreset={(presetId) => {
+                  const res = presetManager.duplicatePreset(config, presetId);
+                  if (res.ok && res.preset) {
+                    void persistConfigImmediate(res.config);
+                    showToast('ok', `프리셋 "${res.preset.name}"을 복제했습니다.`);
+                    return res.preset;
+                  }
+                  if (res.error) showToast('err', res.error);
+                  return null;
+                }}
+                onDeletePreset={(presetId) => {
+                  const res = presetManager.deletePreset(config, presetId);
+                  if (res.ok) {
+                    void persistConfigImmediate(res.config);
+                    showToast('ok', '사용자 프리셋을 삭제했습니다 (기존 매크로는 유지됨).');
+                  }
+                  return { ok: res.ok, error: res.error };
+                }}
+                onExportPreset={handleExportPreset}
+                onImportPresetJson={(rawJson) => {
+                  const res = presetManager.importPresetPackage(config, rawJson);
+                  if (res.ok && res.preset) {
+                    void persistConfigImmediate(res.config);
+                    showToast('ok', `프리셋 "${res.preset.name}"을 불러와 저장했습니다.`);
+                  }
+                  return { ok: res.ok, error: res.error };
+                }}
+                onJumpToMacroEditor={() => setActiveNav('macros')}
+              />
             )}
 
             {/* Screen A: Device Management & Firmware Installation */}
@@ -658,6 +868,15 @@ export function App() {
                 }}
                 onApplyToDevice={handleApplyToDevice}
                 onRequestResetDevice={() => setResetModalOpen(true)}
+                onChangeSlotTransitionMode={(mode) =>
+                  mutateConfig({
+                    ...config,
+                    preferences: {
+                      ...config.preferences,
+                      slotTransitionMode: mode,
+                    },
+                  })
+                }
               />
             )}
 

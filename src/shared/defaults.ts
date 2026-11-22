@@ -5,10 +5,13 @@ import {
   LayoutPreset,
   MacroDefinition,
   MacroExecutionMode,
+  MacroSlotPage,
   MacroStepType,
   ProfileDefinition,
+  SlotTransitionMode,
 } from './types';
 import { getTotalSlotCount } from './geometry';
+import { createBuiltInShortcutPresets } from './presets';
 
 const DEFAULT_COLORS = [
   '#1E293B', // Center
@@ -29,7 +32,8 @@ export function createButtonsForLayout(
   const total = getTotalSlotCount(layout);
   const buttons: CircularButtonConfig[] = [];
 
-  for (let slotIndex = 0; slotIndex < total; slotIndex++) {
+  for (let i = 0; i < total; i++) {
+    const slotIndex = i + 1;
     const existing = existingButtons?.find((b) => b.slotIndex === slotIndex);
     if (existing) {
       buttons.push({ ...existing });
@@ -37,8 +41,8 @@ export function createButtonsForLayout(
       buttons.push({
         slotIndex,
         id: `btn-slot-${slotIndex}`,
-        label: slotIndex === 0 ? '중앙 버튼' : `버튼 ${slotIndex}`,
-        shortLabel: slotIndex === 0 ? 'CENTER' : `BTN ${slotIndex}`,
+        label: `버튼 ${slotIndex}`,
+        shortLabel: `BTN ${slotIndex}`,
         accentColor: DEFAULT_COLORS[slotIndex % DEFAULT_COLORS.length],
         macroId: null,
         enabled: true,
@@ -46,6 +50,21 @@ export function createButtonsForLayout(
     }
   }
   return buttons;
+}
+
+export function createDefaultMacroSlots(
+  layout: LayoutPreset,
+  initialButtons?: CircularButtonConfig[]
+): MacroSlotPage[] {
+  const slot1Buttons = createButtonsForLayout(layout, initialButtons);
+  const slot2Buttons = createButtonsForLayout(layout);
+  const slot3Buttons = createButtonsForLayout(layout);
+
+  return [
+    { slotIndex: 1, name: '슬롯 1 (기본)', buttons: slot1Buttons },
+    { slotIndex: 2, name: '슬롯 2 (작업)', buttons: slot2Buttons },
+    { slotIndex: 3, name: '슬롯 3 (미디어)', buttons: slot3Buttons },
+  ];
 }
 
 export function createDefaultConfig(): AppConfig {
@@ -122,134 +141,87 @@ export function createDefaultConfig(): AppConfig {
     },
   ];
 
+  const defaultButtonsList = [
+    {
+      slotIndex: 1,
+      id: 'btn-slot-1',
+      label: '복사',
+      shortLabel: 'COPY',
+      accentColor: '#1E293B',
+      macroId: 'macro-copy',
+      enabled: true,
+    },
+    {
+      slotIndex: 2,
+      id: 'btn-slot-2',
+      label: '붙여넣기',
+      shortLabel: 'PASTE',
+      accentColor: '#1E293B',
+      macroId: 'macro-paste',
+      enabled: true,
+    },
+    {
+      slotIndex: 3,
+      id: 'btn-slot-3',
+      label: '실행 취소',
+      shortLabel: 'UNDO',
+      accentColor: '#1E293B',
+      macroId: 'macro-undo',
+      enabled: true,
+    },
+    {
+      slotIndex: 4,
+      id: 'btn-slot-4',
+      label: '저장/실행',
+      shortLabel: 'RUN',
+      accentColor: '#2563EB',
+      macroId: 'macro-save-build',
+      enabled: true,
+    },
+    {
+      slotIndex: 5,
+      id: 'btn-slot-5',
+      label: '캡처',
+      shortLabel: 'SNAP',
+      accentColor: '#334155',
+      macroId: 'macro-screenshot',
+      enabled: true,
+    },
+    {
+      slotIndex: 6,
+      id: 'btn-slot-6',
+      label: '음소거',
+      shortLabel: 'MUTE',
+      accentColor: '#334155',
+      macroId: 'macro-mute',
+      enabled: true,
+    },
+  ];
+
+  const defaultSlots = createDefaultMacroSlots(LayoutPreset.RADIAL_6_CENTER, defaultButtonsList);
   const defaultProfile: ProfileDefinition = {
     id: 'profile-default',
     name: '기본 작업 프로필',
-    description: '일상 편집 및 기본 단축키 구성 (6방향 + 중앙)',
+    description: '일상 편집 및 기본 단축키 구성 (3개 슬롯 좌우 스와이프 지원)',
     layout: LayoutPreset.RADIAL_6_CENTER,
     backgroundColor: '#0F172A',
-    buttons: [
-      {
-        slotIndex: 0,
-        id: 'btn-slot-0',
-        label: '저장/실행',
-        shortLabel: 'RUN',
-        accentColor: '#2563EB',
-        macroId: 'macro-save-build',
-        enabled: true,
-      },
-      {
-        slotIndex: 1,
-        id: 'btn-slot-1',
-        label: '복사',
-        shortLabel: 'COPY',
-        accentColor: '#1E293B',
-        macroId: 'macro-copy',
-        enabled: true,
-      },
-      {
-        slotIndex: 2,
-        id: 'btn-slot-2',
-        label: '붙여넣기',
-        shortLabel: 'PASTE',
-        accentColor: '#1E293B',
-        macroId: 'macro-paste',
-        enabled: true,
-      },
-      {
-        slotIndex: 3,
-        id: 'btn-slot-3',
-        label: '실행 취소',
-        shortLabel: 'UNDO',
-        accentColor: '#1E293B',
-        macroId: 'macro-undo',
-        enabled: true,
-      },
-      {
-        slotIndex: 4,
-        id: 'btn-slot-4',
-        label: '캡처',
-        shortLabel: 'SNAP',
-        accentColor: '#334155',
-        macroId: 'macro-screenshot',
-        enabled: true,
-      },
-      {
-        slotIndex: 5,
-        id: 'btn-slot-5',
-        label: '음소거',
-        shortLabel: 'MUTE',
-        accentColor: '#334155',
-        macroId: 'macro-mute',
-        enabled: true,
-      },
-      {
-        slotIndex: 6,
-        id: 'btn-slot-6',
-        label: '미할당',
-        shortLabel: 'SLOT 6',
-        accentColor: '#1E293B',
-        macroId: null,
-        enabled: true,
-      },
-    ],
+    macroSlots: defaultSlots,
+    activeMacroSlotIndex: 1,
+    buttons: defaultSlots[0].buttons,
     createdAt: now,
     updatedAt: now,
   };
 
+  const devSlots = createDefaultMacroSlots(LayoutPreset.RADIAL_4_CENTER);
   const devProfile: ProfileDefinition = {
     id: 'profile-dev',
     name: '개발 및 디버깅',
-    description: 'IDE 빌드 및 탐색용 4방향 + 중앙 구성',
+    description: 'IDE 빌드 및 탐색용 4방향 원형 구성',
     layout: LayoutPreset.RADIAL_4_CENTER,
     backgroundColor: '#0F172A',
-    buttons: [
-      {
-        slotIndex: 0,
-        id: 'dev-slot-0',
-        label: '저장+빌드',
-        shortLabel: 'BUILD',
-        accentColor: '#0284C7',
-        macroId: 'macro-save-build',
-        enabled: true,
-      },
-      {
-        slotIndex: 1,
-        id: 'dev-slot-1',
-        label: '복사',
-        shortLabel: 'COPY',
-        accentColor: '#1E293B',
-        macroId: 'macro-copy',
-        enabled: true,
-      },
-      {
-        slotIndex: 2,
-        id: 'dev-slot-2',
-        label: '붙여넣기',
-        shortLabel: 'PASTE',
-        accentColor: '#1E293B',
-        macroId: 'macro-paste',
-        enabled: true,
-      },
-      {
-        slotIndex: 3,
-        id: 'dev-slot-3',
-        label: '되돌리기',
-        shortLabel: 'UNDO',
-        accentColor: '#1E293B',
-        macroId: 'macro-undo',
-        enabled: true,
-      },
-      {
-        slotIndex: 4,
-        id: 'dev-slot-4',
-        label: '캡처',
-        shortLabel: 'SNAP',
-        accentColor: '#334155',
-        macroId: 'macro-screenshot',
-        enabled: true,
-      },
-    ],
+    macroSlots: devSlots,
+    activeMacroSlotIndex: 1,
+    buttons: devSlots[0].buttons,
     createdAt: now,
     updatedAt: now,
   };
@@ -259,12 +231,15 @@ export function createDefaultConfig(): AppConfig {
     activeProfileId: defaultProfile.id,
     profiles: [defaultProfile, devProfile],
     macros: defaultMacros,
+    shortcutPresets: createBuiltInShortcutPresets(),
+    activePresetId: null,
     preferences: {
       autoReconnect: true,
       reconnectIntervalMs: 3000,
       preferredPortPath: null,
       hidPreferredWhenAvailable: true,
       macroTestMode: false,
+      slotTransitionMode: SlotTransitionMode.CIRCULAR,
     },
     lastModifiedAt: now,
     lastAppliedToDeviceAt: null,

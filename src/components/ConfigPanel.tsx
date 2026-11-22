@@ -7,7 +7,7 @@ import {
   Send,
   Upload,
 } from 'lucide-react';
-import { AppConfig } from '../shared/types';
+import { AppConfig, SlotTransitionMode } from '../shared/types';
 import { DisplayManager } from '../modules/DisplayManager';
 
 interface ConfigPanelProps {
@@ -22,6 +22,7 @@ interface ConfigPanelProps {
   onImportJsonText: (raw: string) => { ok: boolean; error?: string };
   onApplyToDevice: () => Promise<{ ok: boolean; error?: string }>;
   onRequestResetDevice: () => void;
+  onChangeSlotTransitionMode: (mode: SlotTransitionMode) => void;
 }
 
 export const ConfigPanel: React.FC<ConfigPanelProps> = ({
@@ -36,6 +37,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   onImportJsonText,
   onApplyToDevice,
   onRequestResetDevice,
+  onChangeSlotTransitionMode,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [statusMessage, setStatusMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -82,6 +84,8 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
     e.target.value = '';
   };
 
+  const currentTransitionMode = config.preferences?.slotTransitionMode ?? SlotTransitionMode.CIRCULAR;
+
   return (
     <div className="space-y-6">
       <div className="pb-4 border-b border-slate-200">
@@ -111,6 +115,72 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
             {config.lastAppliedToDeviceAt
               ? new Date(config.lastAppliedToDeviceAt).toLocaleString('ko-KR')
               : '적용 이력 없음'}
+          </div>
+        </div>
+      </div>
+
+      {/* Slot Transition Mode Preference */}
+      <div className="p-5 bg-white border border-slate-200 rounded-md space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-900">매크로 슬롯 좌우 스와이프 전환 방식</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            원형 컨트롤러 화면에서 좌우 스와이프 시 3개 매크로 슬롯이 전환되는 방식을 선택합니다. (설정 유지)
+          </p>
+        </div>
+
+        <div className="space-y-2 pt-1">
+          {[
+            {
+              mode: SlotTransitionMode.CIRCULAR,
+              title: '1. 순환 방식 (기본값)',
+              desc: '1 → 2 → 3 → 1 (끝에서 반대편으로 순환)',
+            },
+            {
+              mode: SlotTransitionMode.STOP_AT_ENDS,
+              title: '2. 끝에서 정지',
+              desc: '1 → 2 → 3에서 더 이상 진행하지 않음',
+            },
+          ].map((item) => {
+            const active = currentTransitionMode === item.mode;
+            return (
+              <label
+                key={item.mode}
+                className={`flex items-start gap-3 p-3.5 rounded-md border cursor-pointer transition-colors ${
+                  active
+                    ? 'bg-blue-50/70 border-blue-500 ring-1 ring-blue-500'
+                    : 'bg-white border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="slotTransitionModeRadio"
+                  checked={active}
+                  onChange={() => onChangeSlotTransitionMode(item.mode)}
+                  className="mt-0.5 text-blue-600 focus:ring-blue-500"
+                />
+                <div className="flex-1">
+                  <div className="text-xs font-semibold text-slate-900">{item.title}</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">{item.desc}</div>
+                </div>
+              </label>
+            );
+          })}
+        </div>
+
+        {/* Real-time reflection & persistence status note */}
+        <div className="pt-3 mt-1 flex flex-wrap items-center justify-between gap-2 text-xs border-t border-slate-100">
+          <div className="flex items-center gap-1.5 text-emerald-700 font-medium">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span>스와이프 미리보기 및 실행 환경에 실시간 반영됨</span>
+          </div>
+          <div className="text-xs font-medium">
+            {hasUnsavedChanges ? (
+              <span className="text-amber-700 font-semibold">
+                * 영구 저장하려면 아래 [PC 설정 저장] 버튼을 눌러주세요
+              </span>
+            ) : (
+              <span className="text-slate-500">설정이 영구 저장되어 있습니다</span>
+            )}
           </div>
         </div>
       </div>

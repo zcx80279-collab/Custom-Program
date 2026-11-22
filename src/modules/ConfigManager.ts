@@ -5,6 +5,7 @@ import {
   LogLevel,
   MacroExecutionMode,
   MacroStepType,
+  SlotTransitionMode,
   ValidationResult,
 } from '../shared/types';
 import { createDefaultConfig } from '../shared/defaults';
@@ -46,6 +47,12 @@ export class ConfigManager {
       errors.push('매크로 목록 형식이 올바르지 않습니다.');
     }
 
+    if (cfg.preferences && cfg.preferences.slotTransitionMode !== undefined) {
+      if (!Object.values(SlotTransitionMode).includes(cfg.preferences.slotTransitionMode)) {
+        errors.push('슬롯 전환 방식 설정(slotTransitionMode)이 유효하지 않습니다.');
+      }
+    }
+
     if (Array.isArray(cfg.profiles)) {
       const profileIds = new Set<string>();
       for (const p of cfg.profiles) {
@@ -63,6 +70,16 @@ export class ConfigManager {
         }
         if (!Array.isArray(p.buttons) || p.buttons.length === 0) {
           errors.push(`프로필 "${p.name}"에 버튼 정의가 없습니다.`);
+        }
+        if (p.macroSlots !== undefined) {
+          if (!Array.isArray(p.macroSlots) || p.macroSlots.length !== 3) {
+            errors.push(`프로필 "${p.name}"의 매크로 슬롯 목록은 3개여야 합니다.`);
+          }
+        }
+        if (p.activeMacroSlotIndex !== undefined) {
+          if (p.activeMacroSlotIndex < 1 || p.activeMacroSlotIndex > 3) {
+            errors.push(`프로필 "${p.name}"의 활성 슬롯 번호는 1~3 범위여야 합니다.`);
+          }
         }
       }
 
@@ -127,6 +144,31 @@ export class ConfigManager {
             errors.push(
               `매크로 "${m.name}": Windows 프로그램 실행 동작이 포함된 매크로는 PC_AGENT 모드여야 합니다.`
             );
+          }
+        }
+      }
+    }
+
+    if (cfg.shortcutPresets !== undefined) {
+      if (!Array.isArray(cfg.shortcutPresets)) {
+        errors.push('단축키 프리셋 목록 형식이 올바르지 않습니다.');
+      } else {
+        const presetIds = new Set<string>();
+        for (const preset of cfg.shortcutPresets) {
+          if (!preset || typeof preset.id !== 'string' || !preset.id.trim()) {
+            errors.push('단축키 프리셋 ID가 누락되었습니다.');
+            continue;
+          }
+          if (presetIds.has(preset.id)) {
+            errors.push(`중복된 단축키 프리셋 ID가 발견되었습니다: ${preset.id}`);
+          }
+          presetIds.add(preset.id);
+
+          if (typeof preset.name !== 'string' || !preset.name.trim()) {
+            errors.push(`단축키 프리셋(${preset.id})의 이름이 누락되었습니다.`);
+          }
+          if (!Array.isArray(preset.buttons) || preset.buttons.length === 0) {
+            errors.push(`단축키 프리셋 "${preset.name || preset.id}"에 버튼 매핑이 없습니다.`);
           }
         }
       }

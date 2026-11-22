@@ -13,9 +13,9 @@ interface ProfilePanelProps {
 }
 
 const LAYOUT_LABEL: Record<LayoutPreset, string> = {
-  [LayoutPreset.RADIAL_4_CENTER]: '4방향 + 중앙 (5버튼)',
-  [LayoutPreset.RADIAL_6_CENTER]: '6방향 + 중앙 (7버튼)',
-  [LayoutPreset.RADIAL_8_CENTER]: '8방향 + 중앙 (9버튼)',
+  [LayoutPreset.RADIAL_4_CENTER]: '4방향 원형 (4버튼)',
+  [LayoutPreset.RADIAL_6_CENTER]: '6방향 원형 (6버튼)',
+  [LayoutPreset.RADIAL_8_CENTER]: '8방향 원형 (8버튼)',
 };
 
 export const ProfilePanel: React.FC<ProfilePanelProps> = ({

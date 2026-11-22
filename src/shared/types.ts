@@ -115,15 +115,60 @@ export interface CircularButtonConfig {
   enabled: boolean;
 }
 
+export enum SlotTransitionMode {
+  CIRCULAR = 'CIRCULAR',
+  STOP_AT_ENDS = 'STOP_AT_ENDS',
+}
+
+export interface MacroSlotPage {
+  slotIndex: number; // 1, 2, 3
+  name: string;
+  buttons: CircularButtonConfig[];
+}
+
 export interface ProfileDefinition {
   id: string;
   name: string;
   description: string;
   layout: LayoutPreset;
   backgroundColor: string;
+  /** 3 macro slot pages (1, 2, 3) */
+  macroSlots: MacroSlotPage[];
+  /** Currently active macro slot index (1, 2, or 3) */
+  activeMacroSlotIndex: number;
+  /** Active button array accessor for backward compatibility */
   buttons: CircularButtonConfig[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PresetButtonMapping {
+  /** Outer button slot index 1..6 */
+  slotIndex: number;
+  label: string;
+  shortLabel: string;
+  accentColor: string;
+  macroId: string | null;
+  enabled: boolean;
+}
+
+export interface ShortcutPreset {
+  id: string;
+  name: string;
+  /** Explicit target application / environment where shortcuts apply */
+  targetApp: string;
+  description: string;
+  isBuiltIn: boolean;
+  buttons: PresetButtonMapping[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExportedPresetPackage {
+  format: 'roundmacro-preset-v1';
+  exportedAt: string;
+  preset: ShortcutPreset;
+  macros: MacroDefinition[];
 }
 
 export interface AppConfig {
@@ -131,12 +176,15 @@ export interface AppConfig {
   activeProfileId: string;
   profiles: ProfileDefinition[];
   macros: MacroDefinition[];
+  shortcutPresets?: ShortcutPreset[];
+  activePresetId?: string | null;
   preferences: {
     autoReconnect: boolean;
     reconnectIntervalMs: number;
     preferredPortPath: string | null;
     hidPreferredWhenAvailable: boolean;
     macroTestMode: boolean;
+    slotTransitionMode: SlotTransitionMode;
   };
   lastModifiedAt: string;
   lastAppliedToDeviceAt: string | null;
@@ -305,6 +353,7 @@ export interface DiagnosticLogEntry {
     | 'DeviceManager'
     | 'MacroEngine'
     | 'ProfileManager'
+    | 'PresetManager'
     | 'ConfigManager'
     | 'DisplayManager'
     | 'DiagnosticsManager'

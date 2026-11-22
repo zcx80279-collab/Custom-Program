@@ -1,10 +1,15 @@
 import {
   AppConfig,
   CONFIG_SCHEMA_VERSION,
+  LayoutPreset,
   MacroDefinition,
   MacroStep,
   MacroStepType,
+  ProfileDefinition,
+  SlotTransitionMode,
 } from './types';
+import { mergeBuiltInPresets } from './presets';
+import { createButtonsForLayout, createDefaultMacroSlots } from './defaults';
 
 export interface ParsedArgsResult {
   ok: boolean;
@@ -268,26 +273,76 @@ export function normalizeMacroStep(step: MacroStep): MacroStep {
   };
 }
 
+export function normalizeProfile(profile: ProfileDefinition): ProfileDefinition {
+  const layout = profile.layout || LayoutPreset.RADIAL_6_CENTER;
+  let macroSlots = profile.macroSlots;
+  if (!Array.isArray(macroSlots) || macroSlots.length !== 3) {
+    const existingButtons = Array.isArray(profile.buttons) ? profile.buttons : undefined;
+    macroSlots = createDefaultMacroSlots(layout, existingButtons);
+  } else {
+    macroSlots = macroSlots.map((slot, idx) => ({
+      slotIndex: idx + 1,
+      name: slot.name || `슬롯 ${idx + 1}`,
+      buttons: createButtonsForLayout(layout, slot.buttons),
+    }));
+  }
+
+  const activeSlotIndex =
+    typeof profile.activeMacroSlotIndex === 'number' &&
+    profile.activeMacroSlotIndex >= 1 &&
+    profile.activeMacroSlotIndex <= 3
+      ? profile.activeMacroSlotIndex
+      : 1;
+
+  const activeButtons = macroSlots[activeSlotIndex - 1].buttons;
+
+  return {
+    ...profile,
+    layout,
+    macroSlots,
+    activeMacroSlotIndex: activeSlotIndex,
+    buttons: activeButtons,
+  };
+}
+
 /**
  * Migrates/normalizes loaded AppConfig from v2.0.0 to current v2.1.0 structure
  * without dropping any existing macros, profiles, or preferences.
  */
 export function normalizeLoadedConfig(config: AppConfig): AppConfig {
   const activeExists = config.profiles.some((p) => p.id === config.activeProfileId);
+  const shortcutPresets = mergeBuiltInPresets(config.shortcutPresets);
+  const activePresetExists =
+    typeof config.activePresetId === 'string' &&
+    shortcutPresets.some((p) => p.id === config.activePresetId);
+
+  const slotTransitionMode =
+    config.preferences?.slotTransitionMode === SlotTransitionMode.STOP_AT_ENDS
+      ? SlotTransitionMode.STOP_AT_ENDS
+      : SlotTransitionMode.CIRCULAR;
+
   return {
     ...config,
     schemaVersion: config.schemaVersion || CONFIG_SCHEMA_VERSION,
-    activeProfileId: activeExists ? config.activeProfileId : config.profiles[0].id,
-    macros: config.macros.map((m) => ({
-      ...m,
-      steps: Array.isArray(m.steps) ? m.steps.map(normalizeMacroStep) : [],
-    })),
+    activeProfileId: activeExists ? config.activeProfileId : config.profiles[0]?.id ?? 'profile-default',
+    profiles: Array.isArray(config.profiles) && config.profiles.length > 0
+      ? config.profiles.map(normalizeProfile)
+      : [],
+    macros: Array.isArray(config.macros)
+      ? config.macros.map((m) => ({
+          ...m,
+          steps: Array.isArray(m.steps) ? m.steps.map(normalizeMacroStep) : [],
+        }))
+      : [],
+    shortcutPresets,
+    activePresetId: activePresetExists ? config.activePresetId : null,
     preferences: {
       autoReconnect: config.preferences?.autoReconnect ?? true,
       reconnectIntervalMs: config.preferences?.reconnectIntervalMs ?? 3000,
       preferredPortPath: config.preferences?.preferredPortPath ?? null,
       hidPreferredWhenAvailable: config.preferences?.hidPreferredWhenAvailable ?? true,
       macroTestMode: config.preferences?.macroTestMode ?? false,
+      slotTransitionMode,
     },
   };
 }

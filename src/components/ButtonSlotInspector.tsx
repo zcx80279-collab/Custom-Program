@@ -18,6 +18,7 @@ interface ButtonSlotInspectorProps {
   onUpdateButton: (slotIndex: number, patch: Partial<CircularButtonConfig>) => void;
   onAssignMacro: (slotIndex: number, macroId: string | null) => void;
   onChangeLayout: (layout: LayoutPreset) => void;
+  onSwitchMacroSlot: (profileId: string, slotIndex: number) => void;
   onJumpToMacroEditor: () => void;
 }
 
@@ -46,22 +47,62 @@ export const ButtonSlotInspector: React.FC<ButtonSlotInspectorProps> = ({
   onUpdateButton,
   onAssignMacro,
   onChangeLayout,
+  onSwitchMacroSlot,
   onJumpToMacroEditor,
 }) => {
   const assignedMacro = selectedButton.macroId
     ? macros.find((m) => m.id === selectedButton.macroId)
     : undefined;
 
+  const activeSlotIndex = profile.activeMacroSlotIndex ?? 1;
+
   return (
     <div className="bg-white border border-slate-200 rounded-md p-5 space-y-5">
+      {/* Macro Slot Selector Tabs (1, 2, 3) */}
+      <div className="bg-slate-50 p-3 rounded-md border border-slate-200 space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-slate-800">
+            매크로 슬롯 페이지 전환 ({activeSlotIndex}/3)
+          </span>
+          <span className="text-[11px] text-slate-500">
+            각 슬롯별로 서로 다른 6개 매크로 구성 가능
+          </span>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {[1, 2, 3].map((slotIdx) => {
+            const isActive = activeSlotIndex === slotIdx;
+            const slotPage = profile.macroSlots?.find((s) => s.slotIndex === slotIdx);
+            const assignedCount = slotPage?.buttons.filter((b) => Boolean(b.macroId)).length ?? 0;
+
+            return (
+              <button
+                key={slotIdx}
+                type="button"
+                onClick={() => onSwitchMacroSlot(profile.id, slotIdx)}
+                className={`p-2 rounded-md border text-left transition-colors ${
+                  isActive
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                }`}
+              >
+                <div className="text-xs font-bold">슬롯 {slotIdx}</div>
+                <div className={`text-[10px] truncate ${isActive ? 'text-blue-100' : 'text-slate-500'}`}>
+                  매크로 {assignedCount}/6개
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-200">
         <div>
           <h3 className="text-sm font-semibold text-slate-900">
-            선택된 버튼 설정 · 슬롯 {selectedButton.slotIndex}{' '}
-            ({selectedButton.slotIndex === 0 ? '중앙 원형' : `외곽 섹터 ${selectedButton.slotIndex}`})
+            슬롯 {activeSlotIndex} · 버튼 #{selectedButton.slotIndex}{' '}
+            ({selectedButton.slotIndex === 0 ? '중앙 원형' : `외곽 섹터 ${selectedButton.slotIndex}`}) 편집
           </h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            원형 화면에 표시할 이름, 색상, 활성화 여부 및 매크로 연결을 편집합니다.
+            선택된 매크로 슬롯 페이지의 버튼 이름, 색상, 활성화 여부 및 매크로 연결을 편집합니다.
           </p>
         </div>
 
@@ -188,9 +229,9 @@ export const ButtonSlotInspector: React.FC<ButtonSlotInspectorProps> = ({
         </label>
         <div className="flex flex-wrap items-center gap-2">
           {[
-            { value: LayoutPreset.RADIAL_4_CENTER, label: '4방향 + 중앙 (5버튼)' },
-            { value: LayoutPreset.RADIAL_6_CENTER, label: '6방향 + 중앙 (7버튼)' },
-            { value: LayoutPreset.RADIAL_8_CENTER, label: '8방향 + 중앙 (9버튼)' },
+            { value: LayoutPreset.RADIAL_4_CENTER, label: '4방향 원형 (4버튼)' },
+            { value: LayoutPreset.RADIAL_6_CENTER, label: '6방향 원형 (6버튼)' },
+            { value: LayoutPreset.RADIAL_8_CENTER, label: '8방향 원형 (8버튼)' },
           ].map((preset) => (
             <button
               key={preset.value}
