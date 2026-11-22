@@ -21,10 +21,9 @@ jobs:
         shell: pwsh
         run: |
           if (Test-Path package-lock.json) {
-            npm install
-          } else {
-            npm install
+            Remove-Item package-lock.json -Force
           }
+          npm install
 
       - name: Type-check renderer and Electron
         run: |
