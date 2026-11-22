@@ -754,10 +754,28 @@ export class FirmwareFlashService {
         );
       }
 
+      // 3.8 Pre-flash update mode readiness handshake verification
+      if (request.installMode === 'UPDATE') {
+        emit('PREPARING_PORT', 11, `기기가 '업데이트 모드' 상태에서 응답하는지 사전 핸드셰이크를 확인하고 있습니다...`);
+        try {
+          const testRes = await this.serialDeviceService.testConnection();
+          if (testRes.ok) {
+            emit('PREPARING_PORT', 12, `업데이트 모드 핸드셰이크 성공 (왕복 ${testRes.latencyMs ?? 0}ms). 포트 해제 및 부트로더 전환 준비 중...`);
+          } else {
+            emit('PREPARING_PORT', 12, `안내: 기존 포트 응답 지연 (${testRes.error ?? '타임아웃'}). 수동 다운로드 모드로 전환될 수 있습니다.`);
+          }
+        } catch {
+          // Non-fatal if already in bootloader mode
+        }
+      }
+
       // 4. Disconnect normal Protocol V2 communication cleanly to unlock COM port
-      emit('PREPARING_PORT', 12, `${portPath}의 일반 USB 통신을 중지하고 포트를 준비하고 있습니다...`);
+      emit('PREPARING_PORT', 13, `${portPath}의 일반 USB 통신을 중지하고 포트를 준비하고 있습니다...`);
       await this.serialDeviceService.disconnect();
-      await sleep(350);
+
+      // Dynamic settling delay based on installMode and baud rate to prevent timeout/race conditions
+      const dynamicSettleMs = request.installMode === 'UPDATE' ? 650 : 400;
+      await sleep(dynamicSettleMs);
 
       // 5. Build safe non-shell esptool write_flash argument list
       const baud =

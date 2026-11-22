@@ -5,6 +5,7 @@ import {
   Cpu,
   FileCheck2,
   FolderOpen,
+  Hammer,
   HardDriveDownload,
   RefreshCw,
   Send,
@@ -13,6 +14,10 @@ import {
   XCircle,
 } from 'lucide-react';
 import {
+  FirmwareBuildEnvironment,
+  FirmwareBuildProgressEvent,
+  FirmwareBuildResult,
+  FirmwareBuildToolStatus,
   FirmwareFlashProgressEvent,
   FirmwareFlashResult,
   FirmwareImageEntry,
@@ -70,6 +75,14 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
   const [reapplyingConfig, setReapplyingConfig] = useState(false);
   const [reapplyMessage, setReapplyMessage] = useState<string | null>(null);
 
+  const [buildEnv, setBuildEnv] = useState<FirmwareBuildEnvironment>('jc3636w518c_usb_composite');
+  const [buildToolStatus, setBuildToolStatus] = useState<FirmwareBuildToolStatus | null>(null);
+  const [checkingBuildTools, setCheckingBuildTools] = useState(false);
+  const [building, setBuilding] = useState(false);
+  const [buildProgress, setBuildProgress] = useState<FirmwareBuildProgressEvent | null>(null);
+  const [buildLogs, setBuildLogs] = useState<string[]>([]);
+  const [buildResult, setBuildResult] = useState<FirmwareBuildResult | null>(null);
+
   // Sync default port from DevicePanel / snapshot
   useEffect(() => {
     if (selectedPortFromDevicePanel) {
@@ -118,8 +131,35 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
     }
   };
 
+  const checkBuildTools = async () => {
+    if (!window.roundMacroAPI?.firmware?.detectBuildTools) {
+      setBuildToolStatus({
+        available: false,
+        runtime: 'browser-preview',
+        toolKind: 'none',
+        toolDisplayName: '브라우저 미리보기 (PlatformIO 빌드 미지원)',
+        projectFound: false,
+        error:
+          '브라우저 미리보기에서는 로컬 PlatformIO CLI 빌드 및 firmware/ 프로젝트 실행을 수행할 수 없습니다.',
+        installGuidance: [
+          '실제 ESP32-S3 펌웨어 빌드는 Windows Electron 데스크톱 앱에서 실행하세요.',
+        ],
+      });
+      return;
+    }
+
+    setCheckingBuildTools(true);
+    try {
+      const status = await window.roundMacroAPI.firmware.detectBuildTools();
+      setBuildToolStatus(status);
+    } finally {
+      setCheckingBuildTools(false);
+    }
+  };
+
   useEffect(() => {
     checkTools();
+    checkBuildTools();
   }, []);
 
   useEffect(() => {
@@ -128,6 +168,17 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
       setProgress(evt);
       if (evt.logLine) {
         setLiveLogs((prev) => [...prev.slice(-180), evt.logLine!]);
+      }
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    if (!window.roundMacroAPI?.firmware?.onBuildProgress) return;
+    const unsub = window.roundMacroAPI.firmware.onBuildProgress((evt) => {
+      setBuildProgress(evt);
+      if (evt.logLine) {
+        setBuildLogs((prev) => [...prev.slice(-220), evt.logLine!]);
       }
     });
     return unsub;
@@ -222,9 +273,80 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
     setValidationReport(report);
   };
 
+  const handleBuildFirmware = async () => {
+    if (!window.roundMacroAPI?.firmware?.startBuild || building || flashing) return;
+
+    setBuilding(true);
+    setBuildResult(null);
+    setBuildLogs([]);
+    setBuildProgress({
+      stage: 'CHECKING_ENV',
+      percent: 2,
+      message: 'PlatformIO 빌드 환경 및 프로젝트 경로를 확인하고 있습니다...',
+      timestamp: new Date().toISOString(),
+    });
+    onLogFirmwareEvent(
+      'INFO',
+      `ESP32-S3 펌웨어 빌드 시작 (${buildEnv})`,
+      `설치 모드 기준: ${installMode}`
+    );
+
+    try {
+      const res = await window.roundMacroAPI.firmware.startBuild({
+        environment: buildEnv,
+        installMode,
+      });
+      setBuildResult(res);
+
+      if (res.ok && res.selection && res.report) {
+        // Connect generated firmware.bin / .rmcfw.json package to existing validation & install UI (NO auto-flash)
+        setSelection(res.selection);
+        setValidationReport(res.report);
+        setUserConfirmed(false);
+        setFlashResult(null);
+        onLogFirmwareEvent(
+          res.report.valid ? 'INFO' : 'WARN',
+          `펌웨어 빌드 완료 (${res.firmwareVersion ?? res.environment})`,
+          res.firmwareBinPath ?? res.manifestPath
+        );
+        await checkTools();
+        await checkBuildTools();
+      } else {
+        // Preserve existing firmware selection & validation state on build failure
+        onLogFirmwareEvent(
+          'ERROR',
+          `펌웨어 빌드 실패: ${res.errorMessage ?? '오류'}`,
+          res.errorCode
+        );
+        await checkBuildTools();
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setBuildResult({
+        ok: false,
+        stage: 'FAILED',
+        environment: buildEnv,
+        durationMs: 0,
+        errorCode: 'BUILD_IPC_EXCEPTION',
+        errorMessage: msg,
+        guidanceSteps: ['기존에 선택된 펌웨어 파일은 그대로 보존되었습니다.'],
+        logs: buildLogs,
+        timestamp: new Date().toISOString(),
+      });
+      onLogFirmwareEvent('ERROR', '펌웨어 빌드 IPC 예외 발생', msg);
+    } finally {
+      setBuilding(false);
+    }
+  };
+
+  const handleCancelBuild = async () => {
+    if (!window.roundMacroAPI?.firmware?.cancelBuild || !building) return;
+    await window.roundMacroAPI.firmware.cancelBuild();
+  };
+
   const handleStartFlash = async () => {
     if (!window.roundMacroAPI?.firmware || !selection || !validationReport?.valid) return;
-    if (!targetPort || !userConfirmed || flashing) return;
+    if (!targetPort || !userConfirmed || flashing || building) return;
 
     const previousVersion = snapshot.deviceInfo?.firmwareVersion;
     setFlashing(true);
@@ -321,6 +443,7 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
   const canStartFlash =
     isElectron &&
     !flashing &&
+    !building &&
     Boolean(toolStatus?.available) &&
     Boolean(targetPort) &&
     Boolean(selection) &&
@@ -571,6 +694,192 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
           </div>
         </div>
 
+        {/* PlatformIO Firmware Build Section */}
+        <div className="p-4 border border-slate-200 rounded-md space-y-3 bg-slate-50/60">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-semibold text-slate-900 flex items-center gap-1.5">
+                <Hammer className="w-3.5 h-3.5 text-slate-700" />
+                <span>PlatformIO 펌웨어 빌드 (Guition JC3636W518C)</span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                기존 <span className="font-mono">firmware/</span> 프로젝트로 펌웨어를 빌드하고{' '}
+                <span className="font-mono">rmc-v2-firmware-package</span> 형식으로 패키징한 뒤 아래 설치 목록에 자동 연결합니다.
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={buildEnv}
+                disabled={!isElectron || building || flashing}
+                onChange={(e) => setBuildEnv(e.target.value as FirmwareBuildEnvironment)}
+                className="px-2.5 py-1.5 text-xs font-mono border border-slate-300 rounded-md bg-white disabled:bg-slate-100"
+              >
+                <option value="jc3636w518c_usb_composite">
+                  jc3636w518c_usb_composite (USB CDC+HID · 2.0.0-rc1)
+                </option>
+                <option value="jc3636w518c_cdc_only">
+                  jc3636w518c_cdc_only (HW CDC 전용 · 2.0.0-rc1-cdc)
+                </option>
+              </select>
+
+              {isElectron && (
+                <button
+                  type="button"
+                  disabled={checkingBuildTools || building || flashing}
+                  onClick={checkBuildTools}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 disabled:opacity-40 whitespace-nowrap shrink-0"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>{checkingBuildTools ? '확인 중...' : '빌드 환경 확인'}</span>
+                </button>
+              )}
+
+              {building && (
+                <button
+                  type="button"
+                  onClick={handleCancelBuild}
+                  className="px-3 py-1.5 text-xs font-medium text-red-700 bg-white border border-red-300 rounded-md hover:bg-red-50 whitespace-nowrap shrink-0"
+                >
+                  빌드 중단
+                </button>
+              )}
+
+              <button
+                type="button"
+                disabled={!isElectron || building || flashing}
+                onClick={handleBuildFirmware}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
+              >
+                <Hammer className="w-3.5 h-3.5" />
+                <span>{building ? '펌웨어 빌드 중...' : '펌웨어 만들기'}</span>
+              </button>
+            </div>
+          </div>
+
+          {isElectron && buildToolStatus && (
+            <div
+              className={`p-3 rounded-md border text-xs flex items-start gap-2 ${
+                buildToolStatus.available
+                  ? 'bg-white border-slate-200 text-slate-700'
+                  : 'bg-amber-50 border-amber-200 text-amber-900'
+              }`}
+            >
+              {buildToolStatus.available ? (
+                <CheckCircle2 className="w-4 h-4 text-green-700 mt-0.5 shrink-0" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 text-amber-700 mt-0.5 shrink-0" />
+              )}
+              <div className="space-y-1 min-w-0 flex-1">
+                <div className="font-medium">
+                  빌드 도구: {buildToolStatus.toolDisplayName}
+                  {buildToolStatus.toolVersion ? ` (${buildToolStatus.toolVersion})` : ''}
+                </div>
+                {buildToolStatus.projectPath && (
+                  <div className="text-[11px] font-mono text-slate-500 truncate">
+                    프로젝트 경로: {buildToolStatus.projectPath}
+                  </div>
+                )}
+                {buildToolStatus.error && <div>{buildToolStatus.error}</div>}
+                {buildToolStatus.installGuidance.length > 0 && (
+                  <ul className="list-disc list-inside space-y-0.5 text-[11px]">
+                    {buildToolStatus.installGuidance.map((line, i) => (
+                      <li key={i}>{line}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+
+          {buildProgress && (
+            <div className="p-3 bg-white border border-slate-200 rounded-md space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium text-slate-900">{buildProgress.message}</span>
+                <span className="font-mono tabular-nums font-semibold text-indigo-700">
+                  {buildProgress.percent}%
+                </span>
+              </div>
+              <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-200 ${
+                    buildProgress.stage === 'FAILED'
+                      ? 'bg-red-600'
+                      : buildProgress.stage === 'COMPLETED'
+                        ? 'bg-green-600'
+                        : 'bg-indigo-600'
+                  }`}
+                  style={{ width: `${buildProgress.percent}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {buildResult && (
+            <div
+              className={`p-3 rounded-md border text-xs space-y-2 ${
+                buildResult.ok
+                  ? 'bg-green-50 border-green-200 text-green-900'
+                  : 'bg-red-50 border-red-200 text-red-900'
+              }`}
+            >
+              <div className="font-semibold flex items-center gap-1.5">
+                {buildResult.ok ? (
+                  <CheckCircle2 className="w-4 h-4 text-green-700" />
+                ) : (
+                  <XCircle className="w-4 h-4 text-red-600" />
+                )}
+                <span>
+                  {buildResult.ok
+                    ? `펌웨어 빌드 및 패키지 연결 완료 (${(buildResult.durationMs / 1000).toFixed(1)}초)`
+                    : `펌웨어 빌드 실패 (${buildResult.errorCode ?? 'BUILD_ERROR'})`}
+                </span>
+              </div>
+
+              {buildResult.ok && (
+                <div className="bg-white/80 p-2 rounded border border-green-200 font-mono text-[11px] space-y-0.5 break-all">
+                  <div>
+                    환경/버전: {buildResult.environment} ({buildResult.firmwareVersion ?? '-'}) ·{' '}
+                    {buildResult.usbMode ?? '-'}
+                  </div>
+                  {buildResult.firmwareBinPath && (
+                    <div>생성된 firmware.bin: {buildResult.firmwareBinPath}</div>
+                  )}
+                  {buildResult.manifestPath && (
+                    <div>패키지 매니페스트: {buildResult.manifestPath}</div>
+                  )}
+                  <div className="font-sans text-green-800 pt-1">
+                    아래 펌웨어 검증 목록에 자동 로드되었습니다. 설치 확인 체크박스를 선택한 뒤 직접 설치를 실행하세요.
+                  </div>
+                </div>
+              )}
+
+              {buildResult.errorMessage && (
+                <div className="leading-relaxed">{buildResult.errorMessage}</div>
+              )}
+
+              {buildResult.guidanceSteps && buildResult.guidanceSteps.length > 0 && (
+                <ul className="list-disc list-inside space-y-0.5 text-[11px]">
+                  {buildResult.guidanceSteps.map((step, idx) => (
+                    <li key={idx}>{step}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {buildLogs.length > 0 && (
+            <div className="border border-slate-200 rounded-md overflow-hidden bg-white">
+              <div className="px-3 py-1.5 bg-slate-100 border-b border-slate-200 text-[11px] font-medium text-slate-700">
+                펌웨어 빌드 실행 로그 (PlatformIO)
+              </div>
+              <pre className="p-2.5 text-[11px] font-mono text-slate-800 bg-slate-950/5 max-h-44 overflow-y-auto whitespace-pre-wrap break-all">
+                {buildLogs.join('\n')}
+              </pre>
+            </div>
+          )}
+        </div>
+
         {/* Firmware File Selection */}
         <div className="p-4 border border-slate-200 rounded-md space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -586,7 +895,7 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
 
             <button
               type="button"
-              disabled={!isElectron || flashing}
+              disabled={!isElectron || flashing || building}
               onClick={handleBrowseFirmware}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-40 whitespace-nowrap shrink-0"
             >

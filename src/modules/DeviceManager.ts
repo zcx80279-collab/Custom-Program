@@ -604,7 +604,8 @@ export class DeviceManager {
   }
 
   private handleIncomingWebSerialMessage(msg: ProtocolMessage): void {
-    this.diagnostics.log(LogLevel.RX, 'Protocol', `RX ${msg.command} [${msg.requestId}]`);
+    const rawPreview = JSON.stringify(msg);
+    this.diagnostics.log(LogLevel.RX, 'Protocol', `RX ${msg.command} [${msg.requestId}] 수신 완료`, rawPreview.slice(0, 450));
 
     if (msg.command === ProtocolCommand.MACRO_EVENT) {
       const data = msg.data as { macroId?: string; slot?: number; testMode?: boolean } | undefined;
@@ -656,16 +657,29 @@ export class DeviceManager {
     const msg = buildProtocolMessage(command, data);
     const frame = encodeProtocolFrame(msg);
     const encoded = new TextEncoder().encode(frame);
+    const payloadStr = JSON.stringify(msg);
 
     if (!this.webWriter) {
       this.webWriter = this.webPort.writable.getWriter();
     }
 
-    this.diagnostics.log(LogLevel.TX, 'Protocol', `TX ${command} [${msg.requestId}]`);
+    this.diagnostics.log(
+      LogLevel.TX,
+      'Protocol',
+      `TX ${command} [${msg.requestId}] 패킷 전송 (길이: ${encoded.length} bytes)`,
+      payloadStr.slice(0, 500)
+    );
 
     return new Promise<ProtocolMessage>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         this.pendingRequests.delete(msg.requestId);
+        const timeoutSummary = `[TIMEOUT] ${command} 명령 응답 시간 초과 (${timeoutMs}ms) — 마지막 전송 패킷 상세: requestId=${msg.requestId}, payloadSize=${payloadStr.length} bytes`;
+        this.diagnostics.log(
+          LogLevel.ERROR,
+          'Protocol',
+          timeoutSummary,
+          payloadStr
+        );
         const err = new Error(`${command} 응답 시간 초과 (${timeoutMs}ms)`);
         this.diagnostics.recordCommResult({
           command,
@@ -688,6 +702,8 @@ export class DeviceManager {
       this.webWriter!.write(encoded).catch((writeErr) => {
         clearTimeout(timeoutId);
         this.pendingRequests.delete(msg.requestId);
+        const writeErrMsg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+        this.diagnostics.log(LogLevel.ERROR, 'Protocol', `TX Write Error [${msg.requestId}]: ${writeErrMsg}`);
         reject(writeErr instanceof Error ? writeErr : new Error(String(writeErr)));
       });
     });

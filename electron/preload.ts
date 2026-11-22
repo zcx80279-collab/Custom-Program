@@ -7,6 +7,8 @@ import {
   RoundMacroDesktopAPI,
 } from '../src/shared/types';
 import type {
+  FirmwareBuildProgressEvent,
+  FirmwareBuildRequest,
   FirmwareFlashProgressEvent,
   FirmwareFlashRequest,
   FirmwareImageRole,
@@ -66,6 +68,7 @@ const api: RoundMacroDesktopAPI = {
   },
   firmware: {
     detectTools: () => ipcRenderer.invoke('rmc:firmware:detectTools'),
+    detectBuildTools: () => ipcRenderer.invoke('rmc:firmware:detectBuildTools'),
     browseFirmware: (mode: FirmwareInstallMode) =>
       ipcRenderer.invoke('rmc:firmware:browseFirmware', mode),
     browseSingleImage: (role: FirmwareImageRole) =>
@@ -85,6 +88,21 @@ const api: RoundMacroDesktopAPI = {
       ipcRenderer.on('rmc:firmware:progress', listener);
       return () => {
         ipcRenderer.removeListener('rmc:firmware:progress', listener);
+      };
+    },
+    startBuild: (request: FirmwareBuildRequest) =>
+      ipcRenderer.invoke('rmc:firmware:startBuild', request),
+    cancelBuild: () => ipcRenderer.invoke('rmc:firmware:cancelBuild'),
+    onBuildProgress: (callback: (event: FirmwareBuildProgressEvent) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: FirmwareBuildProgressEvent
+      ) => {
+        callback(data);
+      };
+      ipcRenderer.on('rmc:firmware:buildProgress', listener);
+      return () => {
+        ipcRenderer.removeListener('rmc:firmware:buildProgress', listener);
       };
     },
   },

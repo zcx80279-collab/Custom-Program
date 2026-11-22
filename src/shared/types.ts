@@ -7,6 +7,10 @@ export const DISPLAY_RADIUS = 180;
 import type {
   BrowseFirmwareResult,
   BrowseSingleFirmwareImageResult,
+  FirmwareBuildProgressEvent,
+  FirmwareBuildRequest,
+  FirmwareBuildResult,
+  FirmwareBuildToolStatus,
   FirmwareFlashProgressEvent,
   FirmwareFlashRequest,
   FirmwareFlashResult,
@@ -361,12 +365,16 @@ export interface RoundMacroDesktopAPI {
   };
   firmware: {
     detectTools: () => Promise<FirmwareToolStatus>;
+    detectBuildTools: () => Promise<FirmwareBuildToolStatus>;
     browseFirmware: (mode: FirmwareInstallMode) => Promise<BrowseFirmwareResult>;
     browseSingleImage: (role: FirmwareImageRole) => Promise<BrowseSingleFirmwareImageResult>;
     inspectSelection: (selection: FirmwareSelectionState) => Promise<FirmwareValidationReport>;
     startFlash: (request: FirmwareFlashRequest) => Promise<FirmwareFlashResult>;
     cancelFlash: () => Promise<{ ok: boolean; error?: string }>;
     onProgress: (callback: (event: FirmwareFlashProgressEvent) => void) => () => void;
+    startBuild: (request: FirmwareBuildRequest) => Promise<FirmwareBuildResult>;
+    cancelBuild: () => Promise<{ ok: boolean; error?: string }>;
+    onBuildProgress: (callback: (event: FirmwareBuildProgressEvent) => void) => () => void;
   };
 }
 

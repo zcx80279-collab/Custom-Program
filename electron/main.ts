@@ -9,6 +9,7 @@ import {
   ProgramLaunchTestRequest,
 } from '../src/shared/types';
 import {
+  FirmwareBuildRequest,
   FirmwareFlashRequest,
   FirmwareImageRole,
   FirmwareInstallMode,
@@ -24,11 +25,13 @@ import { SerialDeviceService } from './services/SerialDeviceService';
 import { WindowsMacroExecutor } from './services/WindowsMacroExecutor';
 import { FileConfigStore } from './services/FileConfigStore';
 import { FirmwareFlashService } from './services/FirmwareFlashService';
+import { FirmwareBuildService } from './services/FirmwareBuildService';
 
 let mainWindow: BrowserWindow | null = null;
 const deviceService = new SerialDeviceService();
 const macroExecutor = new WindowsMacroExecutor();
 const firmwareFlashService = new FirmwareFlashService(deviceService);
+const firmwareBuildService = new FirmwareBuildService(firmwareFlashService);
 let configStore: FileConfigStore;
 
 /**
@@ -471,6 +474,23 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('rmc:firmware:cancelFlash', async () => {
     return firmwareFlashService.cancelFlash();
+  });
+
+  // --- Firmware Build IPC (PlatformIO CLI build + rmc-v2-firmware-package packaging) ---
+  ipcMain.handle('rmc:firmware:detectBuildTools', async () => {
+    return firmwareBuildService.detectBuildTools();
+  });
+
+  ipcMain.handle('rmc:firmware:startBuild', async (_evt, request: FirmwareBuildRequest) => {
+    return firmwareBuildService.startBuild(request, (progress) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('rmc:firmware:buildProgress', progress);
+      }
+    });
+  });
+
+  ipcMain.handle('rmc:firmware:cancelBuild', async () => {
+    return firmwareBuildService.cancelBuild();
   });
 
   // Forward sanitized hardware events from ESP32-S3 to renderer

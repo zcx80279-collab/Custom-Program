@@ -7,6 +7,15 @@ files:
   - dist/**/*
   - dist-electron/**/*
   - package.json
+extraResources:
+  - from: firmware
+    to: firmware
+    filter:
+      - platformio.ini
+      - partitions_16mb.csv
+      - src/**/*
+      - include/**/*
+      - scripts/**/*
 asarUnpack:
   - "**/node_modules/@serialport/**"
   - "**/node_modules/serialport/**"

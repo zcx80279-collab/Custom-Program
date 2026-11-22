@@ -158,6 +158,63 @@ export interface BrowseSingleFirmwareImageResult {
   error?: string;
 }
 
+export type FirmwareBuildEnvironment = 'jc3636w518c_usb_composite' | 'jc3636w518c_cdc_only';
+
+export type FirmwareBuildStage =
+  | 'IDLE'
+  | 'CHECKING_ENV'
+  | 'PREPARING'
+  | 'BUILDING'
+  | 'PACKAGING'
+  | 'COMPLETED'
+  | 'FAILED';
+
+export interface FirmwareBuildToolStatus {
+  available: boolean;
+  runtime: 'electron-windows' | 'electron-non-windows' | 'browser-preview';
+  toolKind?: 'pio_exe' | 'platformio_penv' | 'python_platformio' | 'none';
+  toolDisplayName: string;
+  toolVersion?: string;
+  projectFound: boolean;
+  projectPath?: string;
+  outputRootPath?: string;
+  error?: string;
+  installGuidance: string[];
+}
+
+export interface FirmwareBuildRequest {
+  environment: FirmwareBuildEnvironment;
+  installMode: FirmwareInstallMode;
+}
+
+export interface FirmwareBuildProgressEvent {
+  stage: FirmwareBuildStage;
+  percent: number;
+  message: string;
+  logLine?: string;
+  timestamp: string;
+}
+
+export interface FirmwareBuildResult {
+  ok: boolean;
+  stage: FirmwareBuildStage;
+  environment: FirmwareBuildEnvironment;
+  firmwareVersion?: string;
+  usbMode?: 'TINYUSB_CDC_HID' | 'HW_CDC_ONLY';
+  projectPathUsed?: string;
+  outputDir?: string;
+  manifestPath?: string;
+  firmwareBinPath?: string;
+  selection?: FirmwareSelectionState;
+  report?: FirmwareValidationReport;
+  durationMs: number;
+  errorCode?: string;
+  errorMessage?: string;
+  guidanceSteps?: string[];
+  logs: string[];
+  timestamp: string;
+}
+
 const VALID_ROLES = new Set<FirmwareImageRole>(['bootloader', 'partitions', 'boot_app0', 'app']);
 
 export function getDefaultOffsetForRole(role: FirmwareImageRole): string {
