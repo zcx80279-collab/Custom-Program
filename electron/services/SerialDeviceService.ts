@@ -118,6 +118,57 @@ export class SerialDeviceService {
     this.parser.reset();
   }
 
+  /**
+   * Triggers ESP32-S3 TinyUSB CDC bootloader entry via the standard 1200bps touch sequence
+   * (open at 1200 baud -> pulse DTR high -> DTR low -> close).
+   * Safe against immediate USB disconnect when the MCU reboots into ROM download mode.
+   */
+  public async triggerBootloader1200bps(portPath: string): Promise<{ ok: boolean; error?: string }> {
+    await this.disconnect();
+
+    const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const serial = new SerialPort({
+      path: portPath,
+      baudRate: 1200,
+      autoOpen: false,
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        serial.open((err) => (err ? reject(err) : resolve()));
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    const safeSet = (opts: { dtr?: boolean; rts?: boolean }) =>
+      new Promise<void>((resolve) => {
+        if (!serial.isOpen) {
+          resolve();
+          return;
+        }
+        serial.set(opts, () => resolve());
+      });
+
+    try {
+      await safeSet({ dtr: true, rts: false });
+      await wait(60);
+      await safeSet({ dtr: false, rts: false });
+      await wait(120);
+    } finally {
+      if (serial.isOpen) {
+        await new Promise<void>((resolve) => {
+          serial.close(() => resolve());
+        });
+      }
+    }
+
+    return { ok: true };
+  }
+
   public async testConnection(): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
     try {
       const start = Date.now();

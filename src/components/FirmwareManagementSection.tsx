@@ -58,8 +58,9 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
   const isElectron = Boolean(window.roundMacroAPI?.firmware);
 
   const [installMode, setInstallMode] = useState<FirmwareInstallMode>('UPDATE');
-  const [resetMethod, setResetMethod] = useState<FirmwareResetMethod>('default_reset');
+  const [resetMethod, setResetMethod] = useState<FirmwareResetMethod>('auto');
   const [baudRate, setBaudRate] = useState<number>(460800);
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   const [targetPort, setTargetPort] = useState<string>('');
   const [toolStatus, setToolStatus] = useState<FirmwareToolStatus | null>(null);
   const [checkingTools, setCheckingTools] = useState(false);
@@ -190,11 +191,11 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
     setUserConfirmed(false);
     setFlashResult(null);
     setReapplyMessage(null);
+    setRecoveryNotice(null);
 
-    if (nextMode === 'INITIAL_INSTALL') {
-      setResetMethod('no_reset');
-    } else {
-      setResetMethod('default_reset');
+    // Keep smart auto entry as default for both Initial Install and Update so TinyUSB 1200bps touch & fallback work seamlessly
+    if (resetMethod !== 'auto') {
+      setResetMethod('auto');
     }
 
     if (selection && window.roundMacroAPI?.firmware) {
@@ -352,6 +353,7 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
     setFlashing(true);
     setFlashResult(null);
     setReapplyMessage(null);
+    setRecoveryNotice(null);
     setLiveLogs([]);
     setProgress({
       stage: 'VALIDATING',
@@ -434,6 +436,16 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
         : `설정 재적용 실패: ${res.error ?? '알 수 없는 오류'}`
     );
     setReapplyingConfig(false);
+  };
+
+  const handlePrepareManualBootloaderRecovery = async () => {
+    if (flashing) return;
+    setResetMethod('no_reset');
+    setBaudRate(115200);
+    await onScanPorts();
+    setRecoveryNotice(
+      '다운로드 포트를 다시 검색하고 안전 복구 설정(수동 BOOT+RESET 모드 · 115200 bps)으로 전환했습니다. 위에서 ESP32-S3 다운로드(303A:1001) 포트를 확인한 뒤 설치를 다시 시작하세요.'
+    );
   };
 
   const effectivePortOptions = useMemo(() => {
@@ -622,7 +634,9 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
           </div>
           <p className="leading-relaxed">
             이 보드는 외부 UART 칩 없이 ESP32-S3 내장 USB PHY(GPIO 19/20)를 사용하므로, 일반 실행 COM 포트와
-            부트로더 다운로드 COM 포트 번호가 다를 수 있습니다. TinyUSB 복합 모드 사용 중 자동 리셋이 안 되거나 최초 설치 시에는:
+            부트로더 다운로드 COM 포트(<span className="font-mono">303A:1001</span>) 번호가 다를 수 있습니다.{' '}
+            <span className="font-medium text-slate-800">스마트 자동 진입(권장)</span>은 TinyUSB 1200bps 전환,
+            다운로드 포트 자동 재탐색, 115200bps 안전 재시도를 자동으로 수행합니다. 자동 진입에 실패하거나 보드가 응답하지 않을 때만 아래 수동 절차를 사용하세요:
           </p>
           <ol className="list-decimal list-inside space-y-0.5 text-slate-600">
             <li>
@@ -632,7 +646,7 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
             </li>
             <li>
               상단의 <span className="font-medium text-slate-800">다운로드 포트 재검색</span>을 눌러 새로 잡힌{' '}
-              <span className="font-mono">VID 0x303A</span> COM 포트를 선택한 뒤 설치를 시작하세요.
+              <span className="font-mono">303A:1001</span> COM 포트를 선택한 뒤 설치를 시작하세요.
             </li>
           </ol>
         </div>
@@ -653,11 +667,20 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
               className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-md bg-white disabled:bg-slate-100"
             >
               <option value="">-- COM 포트 선택 --</option>
-              {effectivePortOptions.map((p) => (
-                <option key={p.path} value={p.path}>
-                  {p.path} ({p.isSupportedTarget ? 'ESP32-S3' : '일반'} · {p.vendorId ?? '----'}:{p.productId ?? '----'})
-                </option>
-              ))}
+              {effectivePortOptions.map((p) => {
+                const portTag =
+                  p.vendorId === JC3636W518C_TARGET.espressifVid &&
+                  p.productId === JC3636W518C_TARGET.espressifBootloaderPid
+                    ? 'ESP32-S3 다운로드/JTAG'
+                    : p.isSupportedTarget
+                      ? 'ESP32-S3 TinyUSB'
+                      : '일반';
+                return (
+                  <option key={p.path} value={p.path}>
+                    {p.path} ({portTag} · {p.vendorId ?? '----'}:{p.productId ?? '----'})
+                  </option>
+                );
+              })}
             </select>
           </div>
 
@@ -671,6 +694,7 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
               onChange={(e) => setResetMethod(e.target.value as FirmwareResetMethod)}
               className="w-full px-3 py-2 text-xs border border-slate-300 rounded-md bg-white disabled:bg-slate-100"
             >
+              <option value="auto">스마트 자동 진입 — 1200bps + 자동 재시도 (권장)</option>
               <option value="default_reset">자동 리셋 진입 (default_reset)</option>
               <option value="no_reset">수동 BOOT+RESET 진입 후 설치 (no_reset)</option>
             </select>
@@ -1140,6 +1164,30 @@ export const FirmwareManagementSection: React.FC<FirmwareManagementSectionProps>
                     <li key={idx}>{step}</li>
                   ))}
                 </ol>
+              </div>
+            )}
+
+            {!flashResult.ok && flashResult.errorCode === 'BOOTLOADER_CONNECT_FAILED' && (
+              <div className="pt-2 border-t border-red-200 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11px] text-red-800">
+                    보드에서 BOOT+RESET을 누른 뒤 아래 버튼을 누르면 새 다운로드 포트를 다시 찾고 안전 설정을 자동 적용합니다.
+                  </span>
+                  <button
+                    type="button"
+                    disabled={flashing}
+                    onClick={handlePrepareManualBootloaderRecovery}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-900 bg-white border border-red-300 rounded hover:bg-red-100 disabled:opacity-40 whitespace-nowrap shrink-0"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>다운로드 포트 재검색 및 수동 복구 모드 설정</span>
+                  </button>
+                </div>
+                {recoveryNotice && (
+                  <div className="p-2 rounded bg-white/90 border border-red-200 text-[11px] text-slate-800">
+                    {recoveryNotice}
+                  </div>
+                )}
               </div>
             )}
 

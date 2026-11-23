@@ -19,6 +19,7 @@ import {
   validateFirmwareManifestObject,
   validateSelectionImageComposition,
 } from '../../src/shared/firmware';
+import { UsbPortCandidate } from '../../src/shared/types';
 import { SerialDeviceService } from './SerialDeviceService';
 
 interface ResolvedToolRunner {
@@ -29,12 +30,41 @@ interface ResolvedToolRunner {
   prefixArgs: string[];
 }
 
+interface EsptoolAttemptResult {
+  exitCode: number | null;
+  outputAll: string;
+  stderrAll: string;
+  spawnError?: Error;
+}
+
 const VALID_PORT_RE = /^(COM\d{1,3}|\/dev\/tty[\w.-]+)$/i;
 const VALID_OFFSET_RE = /^0x[0-9a-fA-F]{1,8}$/;
 const ALLOWED_BAUD_RATES = new Set([115200, 230400, 460800, 921600]);
+const FALLBACK_SAFE_BAUD = 115200;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isBootloaderConnectError(output: string): boolean {
+  return /Failed to connect|No serial data received|Timed out waiting for packet|Invalid head of packet|Failed to communicate with the flash chip/i.test(
+    output
+  );
+}
+
+function isEsp32S3BootloaderPort(port: UsbPortCandidate): boolean {
+  return Boolean(
+    port.vendorId === JC3636W518C_TARGET.espressifVid &&
+      port.productId === JC3636W518C_TARGET.espressifBootloaderPid
+  );
+}
+
+function isEsp32S3TinyUsbRuntimePort(port: UsbPortCandidate): boolean {
+  return Boolean(
+    port.vendorId === JC3636W518C_TARGET.espressifVid &&
+      port.productId &&
+      port.productId !== JC3636W518C_TARGET.espressifBootloaderPid
+  );
 }
 
 function sha256File(filePath: string): string {
@@ -623,6 +653,8 @@ export class FirmwareFlashService {
       });
     };
 
+    let activePortPath = request.portPath?.trim() ?? '';
+
     const fail = (
       stage: FirmwareFlashStage,
       errorCode: string,
@@ -635,7 +667,7 @@ export class FirmwareFlashService {
       return {
         ok: false,
         stage,
-        portUsed: request.portPath,
+        portUsed: activePortPath || request.portPath,
         previousFirmwareVersion: request.previousFirmwareVersion,
         deviceReconnected: false,
         durationMs: Date.now() - startedAt,
@@ -729,40 +761,48 @@ export class FirmwareFlashService {
         );
       }
 
-      // 3. Check selected port against listed USB ports (block clearly non-Espressif VID if known)
+      // 3. Check selected port against listed USB ports (auto-adopt shifted ESP32-S3 download port if unambiguous)
       const currentPorts = await this.serialDeviceService.listPorts();
-      const matchedPort = currentPorts.find(
-        (p) => p.path.toLowerCase() === portPath.toLowerCase()
-      );
-      if (!matchedPort) {
+      const resolvedPortInfo = this.resolveInitialPort(portPath, currentPorts);
+      if (!resolvedPortInfo) {
         return fail(
           'PREPARING_PORT',
           'PORT_NOT_FOUND',
           `선택한 포트(${portPath})가 현재 시스템에서 감지되지 않습니다.`,
           [
-            'USB-C 케이블 연결 상태를 확인하고 "USB 장치 검색"으로 포트를 다시 조회하세요.',
-            'BOOT(GPIO 0) 버튼을 누른 상태에서 USB를 연결하거나 RESET을 누른 뒤 새 다운로드 COM 포트를 선택하세요.',
+            'USB-C 케이블 연결 상태를 확인하고 "다운로드 포트 재검색"으로 포트를 다시 조회하세요.',
+            'BOOT(GPIO 0) 버튼을 누른 상태에서 RESET을 누른 뒤 새로 잡힌 ESP32-S3 다운로드 COM 포트를 선택하세요.',
           ]
         );
       }
+      const matchedPort = resolvedPortInfo.port;
+      activePortPath = matchedPort.path;
+      if (resolvedPortInfo.switched) {
+        emit(
+          'PREPARING_PORT',
+          9,
+          `선택 포트(${portPath})가 재열거되어 새 ESP32-S3 포트(${activePortPath})로 자동 전환했습니다.`
+        );
+      }
+
       if (matchedPort.vendorId && matchedPort.vendorId !== JC3636W518C_TARGET.espressifVid) {
         return fail(
           'PREPARING_PORT',
           'UNSUPPORTED_USB_VID',
-          `선택한 포트(${portPath})의 USB VID(0x${matchedPort.vendorId})가 Espressif ESP32-S3(0x303A)가 아닙니다.`,
+          `선택한 포트(${activePortPath})의 USB VID(0x${matchedPort.vendorId})가 Espressif ESP32-S3(0x303A)가 아닙니다.`,
           ['다른 USB 시리얼 장치에 잘못 설치하지 않도록 차단했습니다. ESP32-S3 포트를 선택하세요.']
         );
       }
 
       // 3.8 Pre-flash update mode readiness handshake verification
-      if (request.installMode === 'UPDATE') {
+      if (request.installMode === 'UPDATE' && !isEsp32S3BootloaderPort(matchedPort)) {
         emit('PREPARING_PORT', 11, `기기가 '업데이트 모드' 상태에서 응답하는지 사전 핸드셰이크를 확인하고 있습니다...`);
         try {
           const testRes = await this.serialDeviceService.testConnection();
           if (testRes.ok) {
             emit('PREPARING_PORT', 12, `업데이트 모드 핸드셰이크 성공 (왕복 ${testRes.latencyMs ?? 0}ms). 포트 해제 및 부트로더 전환 준비 중...`);
           } else {
-            emit('PREPARING_PORT', 12, `안내: 기존 포트 응답 지연 (${testRes.error ?? '타임아웃'}). 수동 다운로드 모드로 전환될 수 있습니다.`);
+            emit('PREPARING_PORT', 12, `안내: 기존 포트 응답 지연 (${testRes.error ?? '타임아웃'}). 부트로더 자동 진입 절차로 진행합니다.`);
           }
         } catch {
           // Non-fatal if already in bootloader mode
@@ -770,151 +810,287 @@ export class FirmwareFlashService {
       }
 
       // 4. Disconnect normal Protocol V2 communication cleanly to unlock COM port
-      emit('PREPARING_PORT', 13, `${portPath}의 일반 USB 통신을 중지하고 포트를 준비하고 있습니다...`);
+      emit('PREPARING_PORT', 13, `${activePortPath}의 일반 USB 통신을 중지하고 포트를 준비하고 있습니다...`);
       await this.serialDeviceService.disconnect();
 
-      // Dynamic settling delay based on installMode and baud rate to prevent timeout/race conditions
-      const dynamicSettleMs = request.installMode === 'UPDATE' ? 650 : 400;
-      await sleep(dynamicSettleMs);
+      // Wait for Windows usbser.sys to release the COM handle cleanly before esptool/1200bps touch
+      await sleep(800);
 
-      // 5. Build safe non-shell esptool write_flash argument list
-      const baud =
+      // 5. Prepare sorted images and baud rate
+      const requestedBaud =
         request.baudRate && ALLOWED_BAUD_RATES.has(request.baudRate)
           ? request.baudRate
           : 460800;
 
-      const beforeMode = request.resetMethod === 'no_reset' ? 'no_reset' : 'default_reset';
       const sortedImages = [...report.images].sort(
         (a, b) => parseInt(a.offset, 16) - parseInt(b.offset, 16)
       );
 
-      const writeArgs: string[] = [
-        ...tool.prefixArgs,
-        '--chip',
-        JC3636W518C_TARGET.mcu,
-        '--port',
-        portPath,
-        '--baud',
-        String(baud),
-        '--before',
-        beforeMode,
-        '--after',
-        'hard_reset',
-        'write_flash',
-        '-z',
-        '--flash_mode',
-        JC3636W518C_TARGET.flashMode,
-        '--flash_freq',
-        JC3636W518C_TARGET.flashFreq,
-        '--flash_size',
-        JC3636W518C_TARGET.flashSize,
-      ];
+      // Helper: Perform 1200bps touch (Arduino-ESP32 TinyUSB USBCDC bootloader trigger) and wait for re-enumeration
+      const perform1200bpsTouchAndDiscover = async (
+        touchPortPath: string
+      ): Promise<{ portPath: string; transitionedToBootloaderPid: boolean }> => {
+        const beforePorts = await this.serialDeviceService.listPorts();
+        const beforePortPaths = new Set(beforePorts.map((p) => p.path.toLowerCase()));
 
-      for (const img of sortedImages) {
-        writeArgs.push(img.offset, img.filePath);
-      }
+        emit(
+          'CONNECTING_BOOTLOADER',
+          14,
+          `${touchPortPath}에 ESP32-S3 1200bps 부트로더 전환 신호를 전송하고 있습니다...`
+        );
 
-      emit(
-        'CONNECTING_BOOTLOADER',
-        16,
-        `ESP32-S3 부트로더(${portPath}, ${beforeMode})에 연결 중...`,
-        `[EXEC] ${tool.command} ${writeArgs.join(' ')}`
-      );
-
-      // 6. Execute esptool via spawn with shell: false
-      const totalBytes = sortedImages.reduce((sum, img) => sum + (img.sizeBytes ?? 1), 0);
-      let completedBytes = 0;
-      let currentImageIndex = -1;
-      let currentImagePercent = 0;
-
-      const flashExec = await new Promise<{ exitCode: number | null; stderrAll: string; spawnError?: Error }>(
-        (resolve) => {
-          let settled = false;
-          let stderrAll = '';
-          let lineBuf = '';
-
-          const child = spawn(tool.command, writeArgs, {
-            shell: false,
-            windowsHide: true,
-          });
-          this.activeFlashProcess = child;
-
-          const processLine = (rawLine: string) => {
-            const line = rawLine.trim();
-            if (!line) return;
-
-            if (/Connecting/i.test(line)) {
-              emit('CONNECTING_BOOTLOADER', 18, 'ESP32-S3 다운로드 모드 응답 대기 중...', line);
-              return;
-            }
-            if (/Chip is ESP32-S3/i.test(line)) {
-              emit('FLASHING', 22, `칩 확인 완료: ${line}`, line);
-              return;
-            }
-            if (/Writing at 0x[0-9a-fA-F]+/i.test(line)) {
-              const pctMatch = line.match(/\((\d+)\s*%\)/);
-              if (pctMatch) {
-                const imgPct = Number(pctMatch[1]);
-                if (currentImageIndex < 0 || imgPct < currentImagePercent) {
-                  if (currentImageIndex >= 0 && currentImageIndex < sortedImages.length) {
-                    completedBytes += sortedImages[currentImageIndex].sizeBytes ?? 0;
-                  }
-                  currentImageIndex = Math.min(currentImageIndex + 1, sortedImages.length - 1);
-                }
-                currentImagePercent = imgPct;
-                const currentSize = sortedImages[Math.max(0, currentImageIndex)]?.sizeBytes ?? 0;
-                const weightedBytes = completedBytes + (currentSize * imgPct) / 100;
-                const overallPct = 22 + Math.round((weightedBytes / Math.max(1, totalBytes)) * 66);
-                emit(
-                  'FLASHING',
-                  Math.min(88, overallPct),
-                  `플래시 기록 중 (${sortedImages[Math.max(0, currentImageIndex)]?.fileName ?? 'image'} ${imgPct}%)`,
-                  line
-                );
-                return;
-              }
-            }
-            if (/Hash of data verified/i.test(line)) {
-              emit('VERIFYING', 90, '플래시 데이터 무결성 해시 검증 완료', line);
-              return;
-            }
-            if (/Hard resetting/i.test(line)) {
-              emit('REBOOTING', 93, 'ESP32-S3 장치를 재부팅하고 있습니다...', line);
-              return;
-            }
-            emit('FLASHING', Math.min(89, 20), line, line);
-          };
-
-          const handleChunk = (chunk: Buffer, isErr: boolean) => {
-            const text = chunk.toString('utf8');
-            if (isErr) stderrAll += text;
-            lineBuf += text;
-            const parts = lineBuf.split(/\r?\n|\r/);
-            lineBuf = parts.pop() ?? '';
-            for (const part of parts) {
-              processLine(part);
-            }
-          };
-
-          child.stdout?.on('data', (d: Buffer) => handleChunk(d, false));
-          child.stderr?.on('data', (d: Buffer) => handleChunk(d, true));
-
-          child.once('error', (err) => {
-            if (settled) return;
-            settled = true;
-            resolve({ exitCode: null, stderrAll, spawnError: err });
-          });
-
-          child.once('close', (code) => {
-            if (lineBuf.trim()) {
-              processLine(lineBuf);
-            }
-            if (settled) return;
-            settled = true;
-            resolve({ exitCode: code, stderrAll });
-          });
+        const touchRes = await this.serialDeviceService.triggerBootloader1200bps(touchPortPath);
+        if (!touchRes.ok) {
+          emit(
+            'CONNECTING_BOOTLOADER',
+            15,
+            `안내: 1200bps 신호 전송 중 응답 예외(${touchRes.error ?? 'unknown'}). 다운로드 포트를 확인합니다...`
+          );
         }
-      );
+
+        const discovered = await this.waitForEsp32S3DownloadPort(
+          touchPortPath,
+          beforePortPaths,
+          4200
+        );
+
+        if (discovered) {
+          activePortPath = discovered.portPath;
+          if (discovered.portChanged) {
+            emit(
+              'CONNECTING_BOOTLOADER',
+              15,
+              `부트로더 전환 후 새 다운로드 COM 포트(${discovered.portPath})가 감지되었습니다.`
+            );
+          } else if (discovered.transitionedToBootloaderPid) {
+            emit(
+              'CONNECTING_BOOTLOADER',
+              15,
+              `ESP32-S3 다운로드 모드 포트(${discovered.portPath}, PID 0x1001)가 확인되었습니다.`
+            );
+          }
+          // Brief settling delay for Windows usbser.sys after USB re-enumeration
+          await sleep(450);
+          return {
+            portPath: discovered.portPath,
+            transitionedToBootloaderPid: discovered.transitionedToBootloaderPid,
+          };
+        }
+
+        await sleep(500);
+        return { portPath: touchPortPath, transitionedToBootloaderPid: false };
+      };
+
+      const refreshBestPortPath = async (fallbackPort: string): Promise<string> => {
+        const latestPorts = await this.serialDeviceService.listPorts();
+        const best = this.findBestEsp32Port(fallbackPort, latestPorts);
+        if (best && best.path.toLowerCase() !== fallbackPort.toLowerCase()) {
+          emit(
+            'CONNECTING_BOOTLOADER',
+            16,
+            `재검색된 ESP32-S3 포트(${best.path})로 재시도합니다.`
+          );
+          activePortPath = best.path;
+          return best.path;
+        }
+        return fallbackPort;
+      };
+
+      // 6. Execute esptool with smart ESP32-S3 bootloader entry & automatic fallback retries
+      const resetMethod = request.resetMethod ?? 'auto';
+      const isTinyUsbRuntime = isEsp32S3TinyUsbRuntimePort(matchedPort);
+      let flashExec: EsptoolAttemptResult;
+
+      if (resetMethod === 'auto') {
+        if (isTinyUsbRuntime) {
+          // TinyUSB composite runtime port cannot be reset by esptool DTR/RTS alone: run 1200bps touch first
+          const touchResult = await perform1200bpsTouchAndDiscover(activePortPath);
+          const firstBefore: 'default_reset' | 'no_reset' = touchResult.transitionedToBootloaderPid
+            ? 'no_reset'
+            : 'default_reset';
+
+          flashExec = await this.runEsptoolAttempt(
+            tool,
+            touchResult.portPath,
+            requestedBaud,
+            firstBefore,
+            sortedImages,
+            emit
+          );
+
+          if (
+            !this.cancelled &&
+            !flashExec.spawnError &&
+            flashExec.exitCode !== 0 &&
+            isBootloaderConnectError(flashExec.outputAll)
+          ) {
+            const retryPort = await refreshBestPortPath(activePortPath);
+            const secondBefore: 'default_reset' | 'no_reset' =
+              firstBefore === 'no_reset' ? 'default_reset' : 'no_reset';
+            emit(
+              'CONNECTING_BOOTLOADER',
+              17,
+              `부트로더 1차 연결 실패 — ${secondBefore} (${FALLBACK_SAFE_BAUD}bps) 안전 모드로 자동 재시도합니다...`
+            );
+            await sleep(400);
+            flashExec = await this.runEsptoolAttempt(
+              tool,
+              retryPort,
+              FALLBACK_SAFE_BAUD,
+              secondBefore,
+              sortedImages,
+              emit
+            );
+          }
+        } else {
+          // USB Serial/JTAG (PID 1001) or unknown PID: try default_reset first, then no_reset@115200, then 1200bps touch
+          flashExec = await this.runEsptoolAttempt(
+            tool,
+            activePortPath,
+            requestedBaud,
+            'default_reset',
+            sortedImages,
+            emit
+          );
+
+          if (
+            !this.cancelled &&
+            !flashExec.spawnError &&
+            flashExec.exitCode !== 0 &&
+            isBootloaderConnectError(flashExec.outputAll)
+          ) {
+            const retryPort = await refreshBestPortPath(activePortPath);
+            emit(
+              'CONNECTING_BOOTLOADER',
+              17,
+              `자동 리셋(default_reset) 응답 시간 초과 — 수동/대기 다운로드 모드(no_reset · ${FALLBACK_SAFE_BAUD}bps)로 자동 재시도합니다...`
+            );
+            await sleep(400);
+            flashExec = await this.runEsptoolAttempt(
+              tool,
+              retryPort,
+              FALLBACK_SAFE_BAUD,
+              'no_reset',
+              sortedImages,
+              emit
+            );
+          }
+
+          if (
+            !this.cancelled &&
+            !flashExec.spawnError &&
+            flashExec.exitCode !== 0 &&
+            isBootloaderConnectError(flashExec.outputAll)
+          ) {
+            emit(
+              'CONNECTING_BOOTLOADER',
+              17,
+              `재시도 실패 — 1200bps 부트로더 전환 후 ${FALLBACK_SAFE_BAUD}bps로 최종 재시도합니다...`
+            );
+            const touchResult = await perform1200bpsTouchAndDiscover(activePortPath);
+            flashExec = await this.runEsptoolAttempt(
+              tool,
+              touchResult.portPath,
+              FALLBACK_SAFE_BAUD,
+              'no_reset',
+              sortedImages,
+              emit
+            );
+          }
+        }
+      } else if (resetMethod === 'default_reset') {
+        if (isTinyUsbRuntime) {
+          await perform1200bpsTouchAndDiscover(activePortPath);
+        }
+        flashExec = await this.runEsptoolAttempt(
+          tool,
+          activePortPath,
+          requestedBaud,
+          'default_reset',
+          sortedImages,
+          emit
+        );
+
+        if (
+          !this.cancelled &&
+          !flashExec.spawnError &&
+          flashExec.exitCode !== 0 &&
+          isBootloaderConnectError(flashExec.outputAll)
+        ) {
+          const retryPort = await refreshBestPortPath(activePortPath);
+          emit(
+            'CONNECTING_BOOTLOADER',
+            17,
+            `default_reset 연결 시간 초과 — no_reset (${FALLBACK_SAFE_BAUD}bps) 모드로 자동 재시도합니다...`
+          );
+          await sleep(400);
+          flashExec = await this.runEsptoolAttempt(
+            tool,
+            retryPort,
+            FALLBACK_SAFE_BAUD,
+            'no_reset',
+            sortedImages,
+            emit
+          );
+        }
+      } else {
+        // Explicit no_reset mode: try requested baud first, then shifted port @ 115200, then 1200bps + default_reset fallback
+        flashExec = await this.runEsptoolAttempt(
+          tool,
+          activePortPath,
+          requestedBaud,
+          'no_reset',
+          sortedImages,
+          emit
+        );
+
+        if (
+          !this.cancelled &&
+          !flashExec.spawnError &&
+          flashExec.exitCode !== 0 &&
+          isBootloaderConnectError(flashExec.outputAll)
+        ) {
+          const retryPort = await refreshBestPortPath(activePortPath);
+          if (requestedBaud !== FALLBACK_SAFE_BAUD || retryPort.toLowerCase() !== activePortPath.toLowerCase()) {
+            emit(
+              'CONNECTING_BOOTLOADER',
+              17,
+              `no_reset 응답 시간 초과 — ${retryPort} (${FALLBACK_SAFE_BAUD}bps)로 재시도합니다...`
+            );
+            await sleep(350);
+            flashExec = await this.runEsptoolAttempt(
+              tool,
+              retryPort,
+              FALLBACK_SAFE_BAUD,
+              'no_reset',
+              sortedImages,
+              emit
+            );
+          }
+        }
+
+        if (
+          !this.cancelled &&
+          !flashExec.spawnError &&
+          flashExec.exitCode !== 0 &&
+          isBootloaderConnectError(flashExec.outputAll)
+        ) {
+          emit(
+            'CONNECTING_BOOTLOADER',
+            17,
+            `수동 다운로드 모드 응답 없음 — 보드가 일반 실행 중일 수 있어 1200bps/자동 리셋(${FALLBACK_SAFE_BAUD}bps)으로 전환을 시도합니다...`
+          );
+          const touchResult = await perform1200bpsTouchAndDiscover(activePortPath);
+          flashExec = await this.runEsptoolAttempt(
+            tool,
+            touchResult.portPath,
+            FALLBACK_SAFE_BAUD,
+            touchResult.transitionedToBootloaderPid ? 'no_reset' : 'default_reset',
+            sortedImages,
+            emit
+          );
+        }
+      }
 
       this.activeFlashProcess = null;
 
@@ -937,8 +1113,14 @@ export class FirmwareFlashService {
       }
 
       if (flashExec.exitCode !== 0) {
-        const combinedErr = `${collectedLogs.slice(-8).join('\n')}\n${flashExec.stderrAll}`;
-        return this.classifyFlashFailure(combinedErr, portPath, startedAt, collectedLogs, request.previousFirmwareVersion);
+        const combinedErr = `${collectedLogs.slice(-10).join('\n')}\n${flashExec.outputAll}\n${flashExec.stderrAll}`;
+        return this.classifyFlashFailure(
+          combinedErr,
+          activePortPath,
+          startedAt,
+          collectedLogs,
+          request.previousFirmwareVersion
+        );
       }
 
       // 7. Post-flash reboot wait, COM port re-discovery, and Protocol V2 version check
@@ -949,7 +1131,7 @@ export class FirmwareFlashService {
       );
 
       await sleep(2200);
-      const reconnectResult = await this.reconnectAndVerifyDevice(portPath);
+      const reconnectResult = await this.reconnectAndVerifyDevice(activePortPath);
 
       if (reconnectResult.connected && reconnectResult.info) {
         emit(
@@ -961,7 +1143,7 @@ export class FirmwareFlashService {
         return {
           ok: true,
           stage: 'COMPLETED',
-          portUsed: portPath,
+          portUsed: activePortPath,
           reconnectedPortPath: reconnectResult.portPath,
           previousFirmwareVersion: request.previousFirmwareVersion,
           newFirmwareVersion: reconnectResult.info.firmwareVersion,
@@ -984,7 +1166,7 @@ export class FirmwareFlashService {
       return {
         ok: true,
         stage: 'COMPLETED',
-        portUsed: portPath,
+        portUsed: activePortPath,
         previousFirmwareVersion: request.previousFirmwareVersion,
         deviceReconnected: false,
         durationMs: Date.now() - startedAt,
@@ -993,7 +1175,7 @@ export class FirmwareFlashService {
           '플래시 기록은 성공했으나 재부팅 후 COM 포트 열거가 지연되었거나 수동 RESET이 필요합니다.',
         recoverySteps: [
           '수동 다운로드 모드(BOOT+RESET)로 설치한 경우 보드의 RESET 버튼을 1회 누르거나 USB 케이블을 재연결하세요.',
-          '"USB 장치 검색" 버튼을 눌러 새로 인식된 COM 포트를 확인한 뒤 "USB 연결"을 클릭하세요.',
+          '"다운로드 포트 재검색" 또는 상단 "USB 장치 검색"으로 새로 인식된 COM 포트를 확인한 뒤 "USB 연결"을 클릭하세요.',
         ],
         logs: collectedLogs,
         timestamp: new Date().toISOString(),
@@ -1024,6 +1206,264 @@ export class FirmwareFlashService {
     return { ok: true };
   }
 
+  private resolveInitialPort(
+    requestedPortPath: string,
+    currentPorts: UsbPortCandidate[]
+  ): { port: UsbPortCandidate; switched: boolean } | null {
+    const exact = currentPorts.find(
+      (p) => p.path.toLowerCase() === requestedPortPath.toLowerCase()
+    );
+    if (exact) {
+      return { port: exact, switched: false };
+    }
+
+    // If the previously selected COM port disappeared right after BOOT+RESET, adopt the unambiguous ESP32-S3 port
+    const bootloaderPorts = currentPorts.filter(isEsp32S3BootloaderPort);
+    if (bootloaderPorts.length === 1) {
+      return { port: bootloaderPorts[0], switched: true };
+    }
+
+    const espressifPorts = currentPorts.filter((p) => p.isSupportedTarget);
+    if (espressifPorts.length === 1) {
+      return { port: espressifPorts[0], switched: true };
+    }
+
+    return null;
+  }
+
+  private findBestEsp32Port(
+    preferredPortPath: string,
+    currentPorts: UsbPortCandidate[]
+  ): UsbPortCandidate | null {
+    const bootloaderPorts = currentPorts.filter(isEsp32S3BootloaderPort);
+    if (bootloaderPorts.length > 0) {
+      return (
+        bootloaderPorts.find(
+          (p) => p.path.toLowerCase() === preferredPortPath.toLowerCase()
+        ) ?? bootloaderPorts[0]
+      );
+    }
+
+    const exact = currentPorts.find(
+      (p) => p.path.toLowerCase() === preferredPortPath.toLowerCase()
+    );
+    if (exact) return exact;
+
+    const espressifPorts = currentPorts.filter((p) => p.isSupportedTarget);
+    return espressifPorts.length === 1 ? espressifPorts[0] : null;
+  }
+
+  private async waitForEsp32S3DownloadPort(
+    originalPortPath: string,
+    previousPortPaths: Set<string>,
+    timeoutMs = 4200
+  ): Promise<{
+    portPath: string;
+    transitionedToBootloaderPid: boolean;
+    portChanged: boolean;
+  } | null> {
+    const started = Date.now();
+    await sleep(500);
+
+    while (Date.now() - started < timeoutMs) {
+      if (this.cancelled) return null;
+
+      const ports = await this.serialDeviceService.listPorts();
+      const bootloaderPorts = ports.filter(isEsp32S3BootloaderPort);
+
+      // Prefer newly appeared ESP32-S3 ROM bootloader COM port (VID 303A, PID 1001)
+      const newlyAppearedBootloader = bootloaderPorts.find(
+        (p) => !previousPortPaths.has(p.path.toLowerCase())
+      );
+      if (newlyAppearedBootloader) {
+        return {
+          portPath: newlyAppearedBootloader.path,
+          transitionedToBootloaderPid: true,
+          portChanged:
+            newlyAppearedBootloader.path.toLowerCase() !== originalPortPath.toLowerCase(),
+        };
+      }
+
+      if (bootloaderPorts.length > 0) {
+        const chosen =
+          bootloaderPorts.find(
+            (p) => p.path.toLowerCase() === originalPortPath.toLowerCase()
+          ) ?? bootloaderPorts[0];
+        return {
+          portPath: chosen.path,
+          transitionedToBootloaderPid: true,
+          portChanged: chosen.path.toLowerCase() !== originalPortPath.toLowerCase(),
+        };
+      }
+
+      // After 2 seconds, if another new VID 303A port appeared or original port stayed available, adopt it
+      if (Date.now() - started >= 2000) {
+        const espressifPorts = ports.filter((p) => p.isSupportedTarget);
+        const newlyAppeared = espressifPorts.find(
+          (p) => !previousPortPaths.has(p.path.toLowerCase())
+        );
+        if (newlyAppeared) {
+          return {
+            portPath: newlyAppeared.path,
+            transitionedToBootloaderPid: isEsp32S3BootloaderPort(newlyAppeared),
+            portChanged:
+              newlyAppeared.path.toLowerCase() !== originalPortPath.toLowerCase(),
+          };
+        }
+        const originalStillPresent = espressifPorts.find(
+          (p) => p.path.toLowerCase() === originalPortPath.toLowerCase()
+        );
+        if (originalStillPresent) {
+          return {
+            portPath: originalStillPresent.path,
+            transitionedToBootloaderPid: isEsp32S3BootloaderPort(originalStillPresent),
+            portChanged: false,
+          };
+        }
+      }
+
+      await sleep(350);
+    }
+
+    return null;
+  }
+
+  private runEsptoolAttempt(
+    tool: ResolvedToolRunner,
+    portPath: string,
+    baud: number,
+    beforeMode: 'default_reset' | 'no_reset',
+    sortedImages: FirmwareImageEntry[],
+    emit: (stage: FirmwareFlashStage, percent: number, message: string, logLine?: string) => void
+  ): Promise<EsptoolAttemptResult> {
+    const writeArgs: string[] = [
+      ...tool.prefixArgs,
+      '--chip',
+      JC3636W518C_TARGET.mcu,
+      '--port',
+      portPath,
+      '--baud',
+      String(baud),
+      '--before',
+      beforeMode,
+      '--after',
+      'hard_reset',
+      'write_flash',
+      '-z',
+      '--flash_mode',
+      JC3636W518C_TARGET.flashMode,
+      '--flash_freq',
+      JC3636W518C_TARGET.flashFreq,
+      '--flash_size',
+      JC3636W518C_TARGET.flashSize,
+    ];
+
+    for (const img of sortedImages) {
+      writeArgs.push(img.offset, img.filePath);
+    }
+
+    emit(
+      'CONNECTING_BOOTLOADER',
+      16,
+      `ESP32-S3 부트로더(${portPath}, ${beforeMode}, ${baud}bps)에 연결 중...`,
+      `[EXEC] ${tool.command} ${writeArgs.join(' ')}`
+    );
+
+    const totalBytes = sortedImages.reduce((sum, img) => sum + (img.sizeBytes ?? 1), 0);
+    let completedBytes = 0;
+    let currentImageIndex = -1;
+    let currentImagePercent = 0;
+
+    return new Promise<EsptoolAttemptResult>((resolve) => {
+      let settled = false;
+      let outputAll = '';
+      let stderrAll = '';
+      let lineBuf = '';
+
+      const child = spawn(tool.command, writeArgs, {
+        shell: false,
+        windowsHide: true,
+      });
+      this.activeFlashProcess = child;
+
+      const processLine = (rawLine: string) => {
+        const line = rawLine.trim();
+        if (!line) return;
+
+        if (/Connecting/i.test(line)) {
+          emit('CONNECTING_BOOTLOADER', 18, 'ESP32-S3 다운로드 모드 응답 대기 중...', line);
+          return;
+        }
+        if (/Chip is ESP32-S3/i.test(line)) {
+          emit('FLASHING', 22, `칩 확인 완료: ${line}`, line);
+          return;
+        }
+        if (/Writing at 0x[0-9a-fA-F]+/i.test(line)) {
+          const pctMatch = line.match(/\((\d+)\s*%\)/);
+          if (pctMatch) {
+            const imgPct = Number(pctMatch[1]);
+            if (currentImageIndex < 0 || imgPct < currentImagePercent) {
+              if (currentImageIndex >= 0 && currentImageIndex < sortedImages.length) {
+                completedBytes += sortedImages[currentImageIndex].sizeBytes ?? 0;
+              }
+              currentImageIndex = Math.min(currentImageIndex + 1, sortedImages.length - 1);
+            }
+            currentImagePercent = imgPct;
+            const currentSize = sortedImages[Math.max(0, currentImageIndex)]?.sizeBytes ?? 0;
+            const weightedBytes = completedBytes + (currentSize * imgPct) / 100;
+            const overallPct = 22 + Math.round((weightedBytes / Math.max(1, totalBytes)) * 66);
+            emit(
+              'FLASHING',
+              Math.min(88, overallPct),
+              `플래시 기록 중 (${sortedImages[Math.max(0, currentImageIndex)]?.fileName ?? 'image'} ${imgPct}%)`,
+              line
+            );
+            return;
+          }
+        }
+        if (/Hash of data verified/i.test(line)) {
+          emit('VERIFYING', 90, '플래시 데이터 무결성 해시 검증 완료', line);
+          return;
+        }
+        if (/Hard resetting/i.test(line)) {
+          emit('REBOOTING', 93, 'ESP32-S3 장치를 재부팅하고 있습니다...', line);
+          return;
+        }
+        emit('FLASHING', Math.min(89, 20), line, line);
+      };
+
+      const handleChunk = (chunk: Buffer, isErr: boolean) => {
+        const text = chunk.toString('utf8');
+        outputAll += text;
+        if (isErr) stderrAll += text;
+        lineBuf += text;
+        const parts = lineBuf.split(/\r?\n|\r/);
+        lineBuf = parts.pop() ?? '';
+        for (const part of parts) {
+          processLine(part);
+        }
+      };
+
+      child.stdout?.on('data', (d: Buffer) => handleChunk(d, false));
+      child.stderr?.on('data', (d: Buffer) => handleChunk(d, true));
+
+      child.once('error', (err) => {
+        if (settled) return;
+        settled = true;
+        resolve({ exitCode: null, outputAll, stderrAll, spawnError: err });
+      });
+
+      child.once('close', (code) => {
+        if (lineBuf.trim()) {
+          processLine(lineBuf);
+        }
+        if (settled) return;
+        settled = true;
+        resolve({ exitCode: code, outputAll, stderrAll });
+      });
+    });
+  }
+
   private classifyFlashFailure(
     output: string,
     portPath: string,
@@ -1036,24 +1476,24 @@ export class FirmwareFlashService {
     let errorMessage = `펌웨어 설치에 실패했습니다 (${portPath}). 아래 로그를 확인하세요.`;
     let recoverySteps: string[] = [
       'USB 케이블이 데이터 전송을 지원하는지 확인하고 PC 본체 USB 포트에 직접 연결하세요.',
-      'ESP32-S3 수동 다운로드 모드(BOOT 버튼 누른 채 RESET 버튼 클릭 → BOOT 해제)로 진입 후 "재시도"하세요.',
+      'ESP32-S3 수동 다운로드 모드(BOOT 버튼 누른 채 RESET 버튼 클릭 → BOOT 해제)로 진입 후 다시 시도하세요.',
     ];
 
-    if (/Failed to connect|No serial data received|Timed out waiting for packet/i.test(output)) {
+    if (isBootloaderConnectError(output)) {
       errorCode = 'BOOTLOADER_CONNECT_FAILED';
       errorMessage =
-        'ESP32-S3 부트로더 다운로드 모드에 진입하지 못했습니다 (응답 시간 초과).';
+        'ESP32-S3 부트로더 다운로드 모드에 진입하지 못했습니다 (자동 진입 및 115200bps 재시도 모두 응답 시간 초과).';
       recoverySteps = [
         '보드의 BOOT(GPIO 0) 버튼을 누른 상태에서 RESET 버튼을 1회 눌렀다 떼고, 1초 뒤 BOOT 버튼에서 손을 떼세요.',
-        'BOOT 버튼이 없는 경우 BOOT를 누른 채 USB-C 케이블을 분리 후 다시 연결하세요.',
-        '"USB 장치 검색"으로 다운로드 COM 포트를 다시 선택한 뒤, 리셋 방식 "수동 BOOT/RESET 모드(no_reset)"로 실행하세요.',
+        'BOOT 버튼이 없거나 반응이 없으면 BOOT를 누른 채 USB-C 케이블을 분리 후 PC 본체 USB 포트에 다시 연결하세요.',
+        '아래 "다운로드 포트 재검색 및 수동 복구 모드 설정" 버튼(또는 상단 "다운로드 포트 재검색")으로 새로 잡힌 ESP32-S3 다운로드(303A:1001) COM 포트를 선택한 뒤 다시 설치하세요.',
       ];
     } else if (/PermissionError|Access is denied|could not open port|busy/i.test(output)) {
       errorCode = 'PORT_ACCESS_DENIED';
       errorMessage = `${portPath} 포트가 다른 프로그램에서 사용 중이거나 접근 권한이 없습니다.`;
       recoverySteps = [
         'Arduino IDE, PlatformIO 시리얼 모니터, PuTTY 등 다른 시리얼 프로그램을 모두 종료하세요.',
-        '장치 재연결 후 "USB 장치 검색"을 다시 실행하세요.',
+        '장치 재연결 후 "다운로드 포트 재검색"을 다시 실행하세요.',
       ];
     } else if (/ClearCommError|WriteFile|disconnected|SerialException|device attached to the system is not functioning/i.test(output)) {
       errorCode = 'USB_DISCONNECTED_DURING_FLASH';

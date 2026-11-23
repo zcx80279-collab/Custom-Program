@@ -2,7 +2,7 @@ export type FirmwareInstallMode = 'INITIAL_INSTALL' | 'UPDATE';
 
 export type FirmwareImageRole = 'bootloader' | 'partitions' | 'boot_app0' | 'app';
 
-export type FirmwareResetMethod = 'default_reset' | 'no_reset';
+export type FirmwareResetMethod = 'auto' | 'default_reset' | 'no_reset';
 
 export const JC3636W518C_TARGET = {
   boardModel: 'Guition JC3636W518C',
@@ -11,6 +11,7 @@ export const JC3636W518C_TARGET = {
   flashMode: 'qio',
   flashFreq: '80m',
   espressifVid: '303A',
+  espressifBootloaderPid: '1001',
   /** Verified from firmware/partitions_16mb.csv */
   offsets: {
     bootloader: '0x0000',

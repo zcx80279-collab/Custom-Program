@@ -147,6 +147,10 @@ void setup() {
   USB.begin();
 #endif
   Serial.begin(115200);
+#if RMC_ENABLE_USB_HID && ARDUINO_USB_CDC_ON_BOOT && !ARDUINO_USB_MODE
+  // Explicitly allow 1200bps touch to reboot ESP32-S3 TinyUSB CDC into ROM bootloader
+  Serial.enableReboot(true);
+#endif
   g_protocol.begin(&Serial, handleProtocolMessage);
 
   // 4. Initialize LittleFS Storage & Load Persisted Config
