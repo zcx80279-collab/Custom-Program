@@ -704,6 +704,7 @@ export function App() {
                         });
                       }}
                       isDeviceConnected={isDeviceConnected}
+                      mouseCursorSpeed={config.preferences?.mouseCursorSpeed ?? 2}
                     />
                   </div>
 
@@ -956,6 +957,15 @@ export function App() {
                     preferences: {
                       ...config.preferences,
                       slotTransitionMode: mode,
+                    },
+                  })
+                }
+                onChangeMouseCursorSpeed={(speed) =>
+                  mutateConfig({
+                    ...config,
+                    preferences: {
+                      ...config.preferences,
+                      mouseCursorSpeed: speed,
                     },
                   })
                 }

@@ -350,6 +350,7 @@ export function normalizeLoadedConfig(config: AppConfig): AppConfig {
       hidPreferredWhenAvailable: config.preferences?.hidPreferredWhenAvailable ?? true,
       macroTestMode: config.preferences?.macroTestMode ?? false,
       slotTransitionMode,
+      mouseCursorSpeed: config.preferences?.mouseCursorSpeed ?? 2,
     },
   };
 }

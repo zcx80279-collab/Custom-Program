@@ -29,6 +29,7 @@ struct FirmwareDeviceConfig {
   uint16_t backgroundColor565;
   std::vector<FirmwareButton> buttons;
   bool testMode = false;
+  uint8_t mouseCursorSpeed = 2;
   bool loadedFromStorage;
 };
 

@@ -10,6 +10,11 @@ public:
   bool triggerButton(const FirmwareButton& button);
   void update();
 
+  // USB HID Mouse actions for circular Touchpad Mouse Mode
+  bool moveMouse(int8_t dx, int8_t dy);
+  bool clickMouseLeft();
+  bool clickMouseRight();
+
   void setTestMode(bool enabled);
   bool isTestMode() const { return _testMode; }
 

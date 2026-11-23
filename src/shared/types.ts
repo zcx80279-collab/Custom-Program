@@ -188,6 +188,7 @@ export interface AppConfig {
     hidPreferredWhenAvailable: boolean;
     macroTestMode: boolean;
     slotTransitionMode: SlotTransitionMode;
+    mouseCursorSpeed: number;
   };
   lastModifiedAt: string;
   lastAppliedToDeviceAt: string | null;
@@ -201,6 +202,7 @@ export interface DeviceCompactConfig {
   layout: LayoutPreset;
   backgroundColor: string;
   testMode?: boolean;
+  mouseCursorSpeed?: number;
   buttons: Array<{
     slot: number;
     label: string;

@@ -32,6 +32,7 @@ void ConfigManager::loadFallbackDefaults() {
   _current.layout = "RADIAL_6_CENTER";
   _current.backgroundColor565 = hexToRgb565("#0F172A");
   _current.testMode = false;
+  _current.mouseCursorSpeed = 2;
   _current.loadedFromStorage = false;
   _rawJson = "";
 
@@ -99,6 +100,7 @@ bool ConfigManager::parseConfigJson(const String& jsonStr, FirmwareDeviceConfig&
   outCfg.layout = doc["layout"] | "RADIAL_6_CENTER";
   outCfg.backgroundColor565 = hexToRgb565(doc["backgroundColor"] | "#0F172A");
   outCfg.testMode = doc["testMode"] | false;
+  outCfg.mouseCursorSpeed = constrain(doc["mouseCursorSpeed"] | 2, 1, 5);
 
   for (JsonObject bObj : buttonsArr) {
     FirmwareButton btn;

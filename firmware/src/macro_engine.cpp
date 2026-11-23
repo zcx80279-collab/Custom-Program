@@ -3,14 +3,17 @@
 #if RMC_ENABLE_USB_HID
 #include "USB.h"
 #include "USBHIDKeyboard.h"
+#include "USBHIDMouse.h"
 static USBHIDKeyboard s_keyboard;
+static USBHIDMouse s_mouse;
 #endif
 
 bool MacroEngine::begin(ProtocolHandler* protocol) {
   _protocol = protocol;
 #if RMC_ENABLE_USB_HID
-  // Requires ARDUINO_USB_MODE=0 (TinyUSB OTG composite CDC+HID)
+  // Requires ARDUINO_USB_MODE=0 (TinyUSB OTG composite CDC + HID Keyboard + HID Mouse)
   s_keyboard.begin();
+  s_mouse.begin();
   _hidReady = true;
 #else
   _hidReady = false;
@@ -24,6 +27,44 @@ void MacroEngine::setTestMode(bool enabled) {
     // Immediately ensure no stuck HID keys remain if switched during idle/run
     releaseAllHidKeys();
   }
+}
+
+bool MacroEngine::moveMouse(int8_t dx, int8_t dy) {
+#if RMC_ENABLE_USB_HID
+  if (_testMode || !_hidReady || (dx == 0 && dy == 0)) {
+    return false;
+  }
+  s_mouse.move(dx, dy, 0, 0);
+  return true;
+#else
+  (void)dx;
+  (void)dy;
+  return false;
+#endif
+}
+
+bool MacroEngine::clickMouseLeft() {
+#if RMC_ENABLE_USB_HID
+  if (_testMode || !_hidReady) {
+    return false;
+  }
+  s_mouse.click(MOUSE_LEFT);
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool MacroEngine::clickMouseRight() {
+#if RMC_ENABLE_USB_HID
+  if (_testMode || !_hidReady) {
+    return false;
+  }
+  s_mouse.click(MOUSE_RIGHT);
+  return true;
+#else
+  return false;
+#endif
 }
 
 bool MacroEngine::triggerButton(const FirmwareButton& button) {

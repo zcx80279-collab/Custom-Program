@@ -68,6 +68,13 @@ void DisplayManager::render(const FirmwareDeviceConfig& config, int activePresse
   s_gfx->fillScreen(config.backgroundColor565);
   s_gfx->drawCircle(cx, cy, 174, config.testMode ? 0xFD20 : 0x31A6);
 
+  // Subtle center 3-tap mouse mode guide ring
+  s_gfx->drawCircle(cx, cy, 46, 0x2965);
+  s_gfx->setTextColor(0x6B4D);
+  s_gfx->setTextSize(1);
+  s_gfx->setCursor(cx - 21, cy - 3);
+  s_gfx->print("3x:MOUSE");
+
   // Draw outer radial sectors as clean circular pads centered along the ring
   const float padCenterR = (innerR + outerR) / 2.0f;
   const int padRadius = (outerCount == 8) ? 34 : (outerCount == 6 ? 42 : 48);
@@ -105,6 +112,82 @@ void DisplayManager::render(const FirmwareDeviceConfig& config, int activePresse
   }
 #else
   (void)config;
+#endif
+}
+
+void DisplayManager::renderMouseMode(
+    const FirmwareDeviceConfig& config,
+    int16_t cursorX,
+    int16_t cursorY,
+    const char* actionLabel) {
+#if RMC_ENABLE_ST77916_DRIVER
+  if (!_ready || !s_gfx) return;
+
+  const int cx = RMC_DISPLAY_WIDTH / 2;  // 180
+  const int cy = RMC_DISPLAY_HEIGHT / 2; // 180
+
+  // Dark obsidian/indigo backdrop with neon cyan (0x07FF) & neon purple (0xA15F) accents
+  s_gfx->fillScreen(config.backgroundColor565 ? config.backgroundColor565 : 0x0842);
+
+  // Outer neon bezel ring
+  const uint16_t neonPrimary = config.testMode ? 0xFD20 : 0x07FF; // Amber in testMode, Neon Cyan in normal
+  const uint16_t neonSecondary = 0xA15F;                          // Neon Purple
+  const uint16_t gridDim = 0x2126;
+
+  s_gfx->drawCircle(cx, cy, 174, neonPrimary);
+  s_gfx->drawCircle(cx, cy, 172, neonSecondary);
+  s_gfx->drawCircle(cx, cy, 124, gridDim);
+
+  // Subtle touchpad crosshair lines
+  s_gfx->drawFastHLine(24, cy, 312, gridDim);
+  s_gfx->drawFastVLine(cx, 24, 312, gridDim);
+
+  // Center 3-tap mode switch zone ring (r = 60)
+  s_gfx->drawCircle(cx, cy, 60, neonSecondary);
+
+  // Top mode badge
+  s_gfx->setTextColor(neonPrimary);
+  s_gfx->setTextSize(2);
+  s_gfx->setCursor(cx - 60, 42);
+  s_gfx->print("MOUSE MODE");
+
+  // Gesture instructions
+  s_gfx->setTextColor(0xBDD7);
+  s_gfx->setTextSize(1);
+  s_gfx->setCursor(cx - 66, 68);
+  s_gfx->print("1x:L-CLK  2x:R-CLK  DRAG");
+
+  // Center 3x tap return hint
+  s_gfx->setTextColor(0x9CD3);
+  s_gfx->setCursor(cx - 42, cy - 4);
+  s_gfx->print("3x TAP : MACRO");
+
+  // Bottom action telemetry
+  if (actionLabel && actionLabel[0] != '\0') {
+    s_gfx->setTextColor(neonPrimary);
+    s_gfx->setTextSize(1);
+    int16_t labelLen = static_cast<int16_t>(strlen(actionLabel));
+    s_gfx->setCursor(cx - (labelLen * 3), 305);
+    s_gfx->print(actionLabel);
+  }
+
+  // Clamp and draw live touch cursor indicator
+  float dx = static_cast<float>(cursorX - cx);
+  float dy = static_cast<float>(cursorY - cy);
+  float dist = sqrtf(dx * dx + dy * dy);
+  int16_t drawX = cursorX;
+  int16_t drawY = cursorY;
+  if (dist > 160.0f && dist > 0.0f) {
+    drawX = cx + static_cast<int16_t>((dx / dist) * 160.0f);
+    drawY = cy + static_cast<int16_t>((dy / dist) * 160.0f);
+  }
+  s_gfx->fillCircle(drawX, drawY, 5, neonPrimary);
+  s_gfx->drawCircle(drawX, drawY, 10, neonSecondary);
+#else
+  (void)config;
+  (void)cursorX;
+  (void)cursorY;
+  (void)actionLabel;
 #endif
 }
 

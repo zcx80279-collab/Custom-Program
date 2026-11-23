@@ -27,6 +27,14 @@ static DiagnosticsManager g_diagnostics;
 
 static unsigned long g_highlightResetAtMs = 0;
 
+static void renderCurrentMode() {
+  if (g_touch.getMode() == ControllerInputMode::MOUSE_MODE) {
+    g_display.renderMouseMode(g_config.getCurrent(), 180, 180, "TOUCHPAD");
+  } else {
+    g_display.render(g_config.getCurrent());
+  }
+}
+
 static void handleProtocolMessage(const JsonDocument& doc) {
   const char* reqId = doc["requestId"] | "unknown";
   const char* cmd   = doc["command"] | "";
@@ -77,7 +85,7 @@ static void handleProtocolMessage(const JsonDocument& doc) {
 
     g_diagnostics.clearError();
     g_macro.setTestMode(g_config.getCurrent().testMode);
-    g_display.render(g_config.getCurrent());
+    renderCurrentMode();
     g_protocol.sendAck(reqId, "CONFIG_APPLIED");
     return;
   }
@@ -116,7 +124,7 @@ static void handleProtocolMessage(const JsonDocument& doc) {
 
     g_diagnostics.clearError();
     g_macro.setTestMode(g_config.getCurrent().testMode);
-    g_display.render(g_config.getCurrent());
+    renderCurrentMode();
     g_protocol.sendAck(reqId, "CONFIG_RESET");
     return;
   }
@@ -129,7 +137,10 @@ void setup() {
   g_diagnostics.begin();
   g_device.begin();
 
-  // 2. Initialize Native USB (CDC + optional TinyUSB HID Composite)
+  // 2. Initialize Macro Engine (HID Keyboard + HID Mouse + PC_AGENT Bridge) before USB.begin()
+  g_macro.begin(&g_protocol);
+
+  // 3. Initialize Native USB (CDC + optional TinyUSB HID Keyboard & Mouse Composite)
 #if RMC_ENABLE_USB_HID
   USB.productName(RMC_DEVICE_NAME);
   USB.manufacturerName("RoundMacroController");
@@ -138,13 +149,10 @@ void setup() {
   Serial.begin(115200);
   g_protocol.begin(&Serial, handleProtocolMessage);
 
-  // 3. Initialize LittleFS Storage & Load Persisted Config
+  // 4. Initialize LittleFS Storage & Load Persisted Config
   if (!g_config.begin()) {
     g_diagnostics.recordError("WARN_NO_STORED_CONFIG", "Loaded fallback defaults");
   }
-
-  // 4. Initialize Macro Engine (HID + PC_AGENT Bridge)
-  g_macro.begin(&g_protocol);
   g_macro.setTestMode(g_config.getCurrent().testMode);
 
   // 5. Initialize 360x360 Display (ST77916 QSPI) & Capacitive Touch (CST816S I2C)
@@ -166,23 +174,57 @@ void loop() {
   // 2. Step non-blocking macro execution state machine
   g_macro.update();
 
-  // 3. Poll capacitive touchscreen and trigger mapped macro
-  int pressedSlot = -1;
-  if (g_touch.pollButtonPress(g_config.getCurrent().layout, pressedSlot)) {
-    const auto& cfg = g_config.getCurrent();
-    for (const auto& btn : cfg.buttons) {
-      if (btn.slotIndex == pressedSlot) {
-        g_display.setPressedSlot(cfg, pressedSlot);
-        g_highlightResetAtMs = millis() + 180;
-        g_macro.triggerButton(btn);
-        break;
+  // 3. Poll capacitive touchscreen for Macro Mode buttons, Center 3-tap Mode Toggle, or Mouse Mode actions
+  const auto& cfg = g_config.getCurrent();
+  TouchInteractionEvent evt = g_touch.pollInteraction(cfg.layout);
+
+  switch (evt.type) {
+    case TouchGestureType::MODE_TOGGLED:
+      g_highlightResetAtMs = 0;
+      if (evt.currentMode == ControllerInputMode::MOUSE_MODE) {
+        g_display.renderMouseMode(cfg, 180, 180, "MOUSE MODE");
+      } else {
+        g_display.render(cfg, -1);
       }
+      break;
+
+    case TouchGestureType::MACRO_BUTTON_PRESS:
+      for (const auto& btn : cfg.buttons) {
+        if (btn.slotIndex == evt.pressedSlot) {
+          g_display.setPressedSlot(cfg, evt.pressedSlot);
+          g_highlightResetAtMs = millis() + 180;
+          g_macro.triggerButton(btn);
+          break;
+        }
+      }
+      break;
+
+    case TouchGestureType::MOUSE_MOVE: {
+      int8_t speed = static_cast<int8_t>(cfg.mouseCursorSpeed > 0 ? cfg.mouseCursorSpeed : 2);
+      g_macro.moveMouse(static_cast<int8_t>(evt.dx * speed), static_cast<int8_t>(evt.dy * speed));
+      break;
     }
+
+    case TouchGestureType::MOUSE_LEFT_CLICK:
+      g_macro.clickMouseLeft();
+      g_display.renderMouseMode(cfg, evt.x, evt.y, "LEFT CLICK");
+      break;
+
+    case TouchGestureType::MOUSE_RIGHT_CLICK:
+      g_macro.clickMouseRight();
+      g_display.renderMouseMode(cfg, evt.x, evt.y, "RIGHT CLICK");
+      break;
+
+    case TouchGestureType::NONE:
+    default:
+      break;
   }
 
-  // 4. Clear visual press highlight without blocking
+  // 4. Clear visual press highlight in Macro Mode without blocking
   if (g_highlightResetAtMs > 0 && millis() >= g_highlightResetAtMs) {
     g_highlightResetAtMs = 0;
-    g_display.setPressedSlot(g_config.getCurrent(), -1);
+    if (g_touch.getMode() == ControllerInputMode::MACRO_MODE) {
+      g_display.setPressedSlot(cfg, -1);
+    }
   }
 }

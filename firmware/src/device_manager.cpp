@@ -51,6 +51,7 @@ void DeviceManager::populateStatus(
   dataOut["touchReady"] = touchMgr.isReady();
   dataOut["hidReady"] = macroEng.isHidReady();
   dataOut["testMode"] = macroEng.isTestMode();
+  dataOut["inputMode"] = (touchMgr.getMode() == ControllerInputMode::MOUSE_MODE) ? "MOUSE" : "MACRO";
   dataOut["freeHeapBytes"] = ESP.getFreeHeap();
   dataOut["freePsramBytes"] = ESP.getFreePsram();
   if (diagMgr.hasError()) {

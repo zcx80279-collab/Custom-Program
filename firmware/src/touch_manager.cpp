@@ -3,7 +3,13 @@
 #include <Wire.h>
 #include <math.h>
 
-static const unsigned long TOUCH_DEBOUNCE_MS = 180;
+static const unsigned long TOUCH_DEBOUNCE_MS      = 180;
+static const unsigned long TAP_MAX_DURATION_MS    = 240;
+static const unsigned long MULTI_TAP_WINDOW_MS    = 260;
+static const float         DRAG_THRESHOLD_PX      = 8.0f;
+static const float         MULTI_TAP_MAX_DIST_PX  = 32.0f;
+static const float         CENTER_SWITCH_RADIUS   = 60.0f;
+static const int16_t       MOUSE_SENSITIVITY_MULT = 2;
 
 bool TouchManager::begin() {
 #if RMC_ENABLE_CST816S_DRIVER
@@ -25,6 +31,13 @@ bool TouchManager::begin() {
   _ready = false;
   return false;
 #endif
+}
+
+void TouchManager::setMode(ControllerInputMode mode) {
+  _mode = mode;
+  _isDragging = false;
+  _pendingTapCount = 0;
+  _pendingTapsInCenter = false;
 }
 
 TouchPoint TouchManager::readCst816s() {
@@ -58,6 +71,13 @@ TouchPoint TouchManager::readCst816s() {
   return pt;
 }
 
+bool TouchManager::isCenterZone(int16_t x, int16_t y) {
+  const float dx = static_cast<float>(x - 180);
+  const float dy = static_cast<float>(y - 180);
+  const float dist = sqrtf(dx * dx + dy * dy);
+  return dist <= CENTER_SWITCH_RADIUS;
+}
+
 int TouchManager::hitTest(int16_t x, int16_t y, const String& layout) {
   const float dx = static_cast<float>(x - 180);
   const float dy = static_cast<float>(y - 180);
@@ -84,21 +104,161 @@ int TouchManager::hitTest(int16_t x, int16_t y, const String& layout) {
 }
 
 bool TouchManager::pollButtonPress(const String& layout, int& pressedSlotOut) {
-  TouchPoint pt = readCst816s();
-  if (!pt.touched) {
-    _wasTouched = false;
-    return false;
-  }
-
-  unsigned long now = millis();
-  if (!_wasTouched && (now - _lastTriggerMs) >= TOUCH_DEBOUNCE_MS) {
-    _wasTouched = true;
-    int slot = hitTest(pt.x, pt.y, layout);
-    if (slot >= 0) {
-      _lastTriggerMs = now;
-      pressedSlotOut = slot;
-      return true;
-    }
+  TouchInteractionEvent evt = pollInteraction(layout);
+  if (evt.type == TouchGestureType::MACRO_BUTTON_PRESS && evt.pressedSlot >= 0) {
+    pressedSlotOut = evt.pressedSlot;
+    return true;
   }
   return false;
+}
+
+TouchInteractionEvent TouchManager::pollInteraction(const String& layout) {
+  TouchInteractionEvent evt;
+  evt.currentMode = _mode;
+  evt.centerTapProgress = _pendingTapsInCenter ? _pendingTapCount : 0;
+
+  TouchPoint pt = readCst816s();
+  unsigned long now = millis();
+
+  if (pt.touched) {
+    if (!_isTouching) {
+      // Touch down start
+      _isTouching = true;
+      _isDragging = false;
+      _downX = _lastX = pt.x;
+      _downY = _lastY = pt.y;
+      _downAtMs = now;
+    } else {
+      // Active touch hold / move
+      const float distFromDown = hypotf(static_cast<float>(pt.x - _downX), static_cast<float>(pt.y - _downY));
+      if (!_isDragging && distFromDown > DRAG_THRESHOLD_PX) {
+        _isDragging = true;
+        // Cancel any pending tap sequence so dragging NEVER triggers a click or mode toggle
+        _pendingTapCount = 0;
+        _pendingTapsInCenter = false;
+        _lastX = pt.x;
+        _lastY = pt.y;
+      } else if (_isDragging && _mode == ControllerInputMode::MOUSE_MODE) {
+        int16_t rawDx = pt.x - _lastX;
+        int16_t rawDy = pt.y - _lastY;
+        _lastX = pt.x;
+        _lastY = pt.y;
+
+        if (rawDx != 0 || rawDy != 0) {
+          evt.type = TouchGestureType::MOUSE_MOVE;
+          evt.dx = constrain(rawDx * MOUSE_SENSITIVITY_MULT, -127, 127);
+          evt.dy = constrain(rawDy * MOUSE_SENSITIVITY_MULT, -127, 127);
+          evt.x = pt.x;
+          evt.y = pt.y;
+          return evt;
+        }
+      } else {
+        _lastX = pt.x;
+        _lastY = pt.y;
+      }
+    }
+    return evt;
+  }
+
+  // Finger just lifted (Touch Up)
+  if (_isTouching) {
+    _isTouching = false;
+    const unsigned long duration = now - _downAtMs;
+    const float totalMove = hypotf(static_cast<float>(_lastX - _downX), static_cast<float>(_lastY - _downY));
+
+    if (!_isDragging && duration <= TAP_MAX_DURATION_MS && totalMove <= DRAG_THRESHOLD_PX) {
+      const bool inCenter = isCenterZone(_downX, _downY);
+
+      if (_mode == ControllerInputMode::MACRO_MODE) {
+        if (inCenter) {
+          // Track rapid center 3-tap for switching Macro Mode -> Mouse Mode
+          if (_pendingTapCount > 0 && _pendingTapsInCenter && (now - _lastTapUpMs) <= MULTI_TAP_WINDOW_MS) {
+            _pendingTapCount++;
+          } else {
+            _pendingTapCount = 1;
+            _pendingTapsInCenter = true;
+          }
+          _lastTapUpMs = now;
+          _lastTapX = _downX;
+          _lastTapY = _downY;
+
+          if (_pendingTapCount >= 3) {
+            _pendingTapCount = 0;
+            _pendingTapsInCenter = false;
+            _mode = ControllerInputMode::MOUSE_MODE;
+            evt.type = TouchGestureType::MODE_TOGGLED;
+            evt.currentMode = _mode;
+            evt.x = _downX;
+            evt.y = _downY;
+            return evt;
+          }
+        } else {
+          // Outer ring button press in Macro Mode
+          _pendingTapCount = 0;
+          _pendingTapsInCenter = false;
+          int slot = hitTest(_downX, _downY, layout);
+          if (slot >= 1 && (now - _lastTriggerMs) >= TOUCH_DEBOUNCE_MS) {
+            _lastTriggerMs = now;
+            evt.type = TouchGestureType::MACRO_BUTTON_PRESS;
+            evt.pressedSlot = slot;
+            evt.x = _downX;
+            evt.y = _downY;
+            return evt;
+          }
+        }
+      } else {
+        // MOUSE_MODE short tap: buffer within MULTI_TAP_WINDOW_MS to distinguish 1x, 2x, 3x(center)
+        const float distFromPrevTap = hypotf(static_cast<float>(_downX - _lastTapX), static_cast<float>(_downY - _lastTapY));
+        if (_pendingTapCount > 0 &&
+            (now - _lastTapUpMs) <= MULTI_TAP_WINDOW_MS &&
+            distFromPrevTap <= MULTI_TAP_MAX_DIST_PX) {
+          _pendingTapCount++;
+          _pendingTapsInCenter = _pendingTapsInCenter && inCenter;
+        } else {
+          _pendingTapCount = 1;
+          _pendingTapsInCenter = inCenter;
+        }
+        _lastTapUpMs = now;
+        _lastTapX = _downX;
+        _lastTapY = _downY;
+
+        // Center rapid 3-tap in Mouse Mode -> immediately switch back to Macro Mode without firing clicks
+        if (_pendingTapCount >= 3 && _pendingTapsInCenter) {
+          _pendingTapCount = 0;
+          _pendingTapsInCenter = false;
+          _mode = ControllerInputMode::MACRO_MODE;
+          evt.type = TouchGestureType::MODE_TOGGLED;
+          evt.currentMode = _mode;
+          evt.x = _downX;
+          evt.y = _downY;
+          return evt;
+        }
+      }
+    } else {
+      // Ended a drag or long press
+      _isDragging = false;
+    }
+    return evt;
+  }
+
+  // Check if pending multi-tap window expired while idle
+  if (_pendingTapCount > 0 && (now - _lastTapUpMs) > MULTI_TAP_WINDOW_MS) {
+    uint8_t resolvedTaps = _pendingTapCount;
+    _pendingTapCount = 0;
+    _pendingTapsInCenter = false;
+
+    if (_mode == ControllerInputMode::MOUSE_MODE) {
+      evt.x = _lastTapX;
+      evt.y = _lastTapY;
+      if (resolvedTaps == 1) {
+        evt.type = TouchGestureType::MOUSE_LEFT_CLICK;
+        return evt;
+      } else if (resolvedTaps == 2) {
+        evt.type = TouchGestureType::MOUSE_RIGHT_CLICK;
+        return evt;
+      }
+    }
+  }
+
+  return evt;
 }

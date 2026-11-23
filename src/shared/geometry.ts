@@ -164,3 +164,17 @@ export function hitTestCircularDisplay(x: number, y: number, layout: LayoutPrese
   return Math.min(outerCount, Math.max(1, sectorIndex + 1));
 }
 
+export const CENTER_SWITCH_RADIUS = 60;
+
+/**
+ * Checks whether (x, y) on the 360x360 display falls inside the center 3-tap mode switch zone.
+ * Mirrors firmware TouchManager::isCenterZone() 1:1.
+ */
+export function isCenterSwitchZone(x: number, y: number): boolean {
+  const dx = x - CENTER_X;
+  const dy = y - CENTER_Y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  return dist <= CENTER_SWITCH_RADIUS;
+}
+
+

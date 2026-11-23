@@ -29,6 +29,7 @@ interface ConfigPanelProps {
   onApplyToDevice: () => Promise<{ ok: boolean; error?: string }>;
   onRequestResetDevice: () => void;
   onChangeSlotTransitionMode: (mode: SlotTransitionMode) => void;
+  onChangeMouseCursorSpeed: (speed: number) => void;
 }
 
 export const ConfigPanel: React.FC<ConfigPanelProps> = ({
@@ -49,6 +50,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   onApplyToDevice,
   onRequestResetDevice,
   onChangeSlotTransitionMode,
+  onChangeMouseCursorSpeed,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [statusMessage, setStatusMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -242,6 +244,37 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
               <span className="text-slate-500">설정이 영구 저장되어 있습니다</span>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Mouse Mode Cursor Speed Preference */}
+      <div className="p-5 bg-white border border-slate-200 rounded-md space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-900">마우스 모드 커서 속도 (감도 조절)</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            원형 터치패드 마우스 모드에서 손가락 이동 시 마우스 커서의 이동 속도(감도)를 설정합니다. (1: 느림 ~ 5: 빠름)
+          </p>
+        </div>
+
+        <div className="flex items-center gap-4 pt-1">
+          <input
+            type="range"
+            min="1"
+            max="5"
+            step="1"
+            value={config.preferences?.mouseCursorSpeed ?? 2}
+            onChange={(e) => onChangeMouseCursorSpeed(parseInt(e.target.value, 10))}
+            className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+          />
+          <span className="font-mono text-sm font-bold text-slate-800 w-16 text-right">
+            {config.preferences?.mouseCursorSpeed ?? 2} 배속
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono pt-1 border-t border-slate-100">
+          <span>1 (정밀 세밀 제어)</span>
+          <span>3 (기본 권장)</span>
+          <span>5 (고속 이동)</span>
         </div>
       </div>
 

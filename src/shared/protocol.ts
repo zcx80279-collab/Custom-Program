@@ -204,6 +204,7 @@ export function compileDeviceCompactConfig(config: AppConfig): DeviceCompactConf
     layout: activeProfile.layout,
     backgroundColor: activeProfile.backgroundColor,
     testMode: Boolean(config.preferences?.macroTestMode),
+    mouseCursorSpeed: config.preferences?.mouseCursorSpeed ?? 2,
     buttons: activeProfile.buttons.map((btn) => {
       const macro = btn.macroId ? macroMap.get(btn.macroId) : undefined;
       const containsLaunchApp = macro ? macroHasLaunchApp(macro) : false;

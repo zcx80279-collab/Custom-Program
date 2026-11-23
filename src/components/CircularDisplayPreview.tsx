@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, MousePointer2 } from 'lucide-react';
 import {
   DISPLAY_HEIGHT,
   DISPLAY_RADIUS,
@@ -11,9 +11,11 @@ import {
 } from '../shared/types';
 import {
   buildLayoutGeometry,
+  CENTER_SWITCH_RADIUS,
   CENTER_X,
   CENTER_Y,
   hitTestCircularDisplay,
+  isCenterSwitchZone,
 } from '../shared/geometry';
 import { MacroTestVisualEvent } from '../modules/MacroEngine';
 import { buildSquishyPalette } from './circular-ui/colorUtils';
@@ -35,7 +37,35 @@ interface CircularDisplayPreviewProps {
   onSwitchMacroSlot: (slotIndex: number) => void;
   onCycleMacroSlot: (direction: 'NEXT' | 'PREV') => void;
   isDeviceConnected: boolean;
+  mouseCursorSpeed?: number;
 }
+
+type ControllerDisplayMode = 'MACRO' | 'MOUSE';
+type MouseActionKind = 'IDLE' | 'MOVE' | 'LEFT_CLICK' | 'RIGHT_CLICK' | 'MODE_ENTER';
+
+interface MouseActionFeedback {
+  kind: MouseActionKind;
+  label: string;
+  dx: number;
+  dy: number;
+  x: number;
+  y: number;
+  timestamp: number;
+}
+
+interface ClickRipple {
+  id: number;
+  x: number;
+  y: number;
+  button: 'LEFT' | 'RIGHT';
+}
+
+// Gesture discrimination thresholds (mirrors firmware/src/touch_manager.cpp 1:1)
+const TAP_MAX_DURATION_MS = 240;
+const MULTI_TAP_WINDOW_MS = 260;
+const DRAG_THRESHOLD_PX = 8;
+const MULTI_TAP_MAX_DIST_PX = 32;
+const MOUSE_SENSITIVITY_MULT = 2;
 
 const PREVIEW_ICON_STORAGE_KEY = 'rmc_ui_preview_icon_overrides_v1';
 
@@ -65,6 +95,20 @@ function loadPreviewIconOverrides(): Record<string, CircularButtonIconId> {
   }
 }
 
+function clampToCircle(x: number, y: number, maxRadius = 160): { x: number; y: number } {
+  const dx = x - CENTER_X;
+  const dy = y - CENTER_Y;
+  const dist = Math.hypot(dx, dy);
+  if (dist <= maxRadius || dist === 0) {
+    return { x: Math.round(x), y: Math.round(y) };
+  }
+  const scale = maxRadius / dist;
+  return {
+    x: Math.round(CENTER_X + dx * scale),
+    y: Math.round(CENTER_Y + dy * scale),
+  };
+}
+
 export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
   profile,
   macros,
@@ -77,6 +121,7 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
   onSwitchMacroSlot,
   onCycleMacroSlot,
   isDeviceConnected,
+  mouseCursorSpeed = 2,
 }) => {
   const uid = useId().replace(/:/g, '');
   const [hoverCoords, setHoverCoords] = useState<{ x: number; y: number; slot: number | null } | null>(null);
@@ -85,7 +130,60 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
     loadPreviewIconOverrides()
   );
 
-  const swipeStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  // Touchpad Mouse Mode state
+  const [displayMode, setDisplayMode] = useState<ControllerDisplayMode>('MACRO');
+  const [centerTapProgress, setCenterTapProgress] = useState<number>(0);
+  const [virtualCursor, setVirtualCursor] = useState<{ x: number; y: number }>({ x: CENTER_X, y: CENTER_Y });
+  const [cursorTrail, setCursorTrail] = useState<Array<{ x: number; y: number }>>([]);
+  const [clickRipples, setClickRipples] = useState<ClickRipple[]>([]);
+  const [mouseFeedback, setMouseFeedback] = useState<MouseActionFeedback>({
+    kind: 'IDLE',
+    label: '터치패드 대기 (단일: 좌클릭 · 이중: 우클릭 · 드래그: 이동)',
+    dx: 0,
+    dy: 0,
+    x: CENTER_X,
+    y: CENTER_Y,
+    timestamp: 0,
+  });
+
+  // Unified pointer/touch state machine refs (prevents drag-vs-click and triple-tap conflicts)
+  const pointerStateRef = useRef<{
+    isDown: boolean;
+    isDragging: boolean;
+    downX: number;
+    downY: number;
+    lastX: number;
+    lastY: number;
+    downClientX: number;
+    downClientY: number;
+    downAtMs: number;
+  }>({
+    isDown: false,
+    isDragging: false,
+    downX: CENTER_X,
+    downY: CENTER_Y,
+    lastX: CENTER_X,
+    lastY: CENTER_Y,
+    downClientX: 0,
+    downClientY: 0,
+    downAtMs: 0,
+  });
+
+  const tapBufferRef = useRef<{
+    count: number;
+    allInCenter: boolean;
+    lastUpAtMs: number;
+    lastX: number;
+    lastY: number;
+    timerId: number | null;
+  }>({
+    count: 0,
+    allInCenter: false,
+    lastUpAtMs: 0,
+    lastX: CENTER_X,
+    lastY: CENTER_Y,
+    timerId: null,
+  });
 
   useEffect(() => {
     try {
@@ -94,6 +192,14 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
       // Ignore storage quota errors for preview-only icon overrides
     }
   }, [iconOverrides]);
+
+  useEffect(() => {
+    return () => {
+      if (tapBufferRef.current.timerId !== null) {
+        window.clearTimeout(tapBufferRef.current.timerId);
+      }
+    };
+  }, []);
 
   const geometries = useMemo(() => buildLayoutGeometry(profile.layout), [profile.layout]);
   const macroMap = useMemo(() => new Map(macros.map((m) => [m.id, m])), [macros]);
@@ -111,6 +217,24 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
       ? visualFeedback.slotIndex
       : null;
 
+  const clearPendingTaps = () => {
+    if (tapBufferRef.current.timerId !== null) {
+      window.clearTimeout(tapBufferRef.current.timerId);
+      tapBufferRef.current.timerId = null;
+    }
+    tapBufferRef.current.count = 0;
+    tapBufferRef.current.allInCenter = false;
+    setCenterTapProgress(0);
+  };
+
+  const spawnClickRipple = (x: number, y: number, button: 'LEFT' | 'RIGHT') => {
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    setClickRipples((prev) => [...prev.slice(-4), { id, x, y, button }]);
+    window.setTimeout(() => {
+      setClickRipples((prev) => prev.filter((r) => r.id !== id));
+    }, 520);
+  };
+
   const triggerSlotInteraction = (slot: number) => {
     onSelectSlot(slot);
     setPressedSlot(slot);
@@ -125,43 +249,242 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
     }
   };
 
-  const handleDisplayPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    swipeStartRef.current = { x: e.clientX, y: e.clientY, time: Date.now() };
-  };
-
-  const handleDisplayPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+  const getLocalDisplayCoords = (e: React.PointerEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = Math.round(((e.clientX - rect.left) / rect.width) * DISPLAY_WIDTH);
     const y = Math.round(((e.clientY - rect.top) / rect.height) * DISPLAY_HEIGHT);
-    const slot = hitTestCircularDisplay(x, y, profile.layout);
-    setHoverCoords({ x, y, slot });
+    return { x, y };
   };
 
-  const handleDisplayPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!swipeStartRef.current) return;
-    const dx = e.clientX - swipeStartRef.current.x;
-    const dy = e.clientY - swipeStartRef.current.y;
-    const dt = Date.now() - swipeStartRef.current.time;
-    swipeStartRef.current = null;
+  const handleDisplayPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const { x, y } = getLocalDisplayCoords(e);
+    const distFromCenter = Math.hypot(x - CENTER_X, y - CENTER_Y);
+    if (distFromCenter > DISPLAY_RADIUS) return;
 
-    // Horizontal swipe threshold: > 40px movement, horizontal dominant, < 600ms
-    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) && dt < 600) {
-      if (dx < 0) {
-        onCycleMacroSlot('NEXT');
-      } else {
-        onCycleMacroSlot('PREV');
+    pointerStateRef.current = {
+      isDown: true,
+      isDragging: false,
+      downX: x,
+      downY: y,
+      lastX: x,
+      lastY: y,
+      downClientX: e.clientX,
+      downClientY: e.clientY,
+      downAtMs: Date.now(),
+    };
+
+    if (displayMode === 'MOUSE') {
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // Ignore if synthetic event doesn't support pointer capture
       }
     }
   };
 
-  const handleDisplayClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * DISPLAY_WIDTH);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * DISPLAY_HEIGHT);
-    const slot = hitTestCircularDisplay(x, y, profile.layout);
-    if (slot !== null) {
-      triggerSlotInteraction(slot);
+  const handleDisplayPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const { x, y } = getLocalDisplayCoords(e);
+    const slot = displayMode === 'MACRO' ? hitTestCircularDisplay(x, y, profile.layout) : null;
+    setHoverCoords({ x, y, slot });
+
+    const pState = pointerStateRef.current;
+    if (!pState.isDown) return;
+
+    const distFromDown = Math.hypot(x - pState.downX, y - pState.downY);
+
+    if (!pState.isDragging && distFromDown > DRAG_THRESHOLD_PX) {
+      pState.isDragging = true;
+      // Moving beyond DRAG_THRESHOLD_PX immediately cancels pending taps so drag NEVER clicks
+      clearPendingTaps();
+      pState.lastX = x;
+      pState.lastY = y;
     }
+
+    if (pState.isDragging && displayMode === 'MOUSE') {
+      const rawDx = x - pState.lastX;
+      const rawDy = y - pState.lastY;
+      pState.lastX = x;
+      pState.lastY = y;
+
+      if (rawDx !== 0 || rawDy !== 0) {
+        const speed = mouseCursorSpeed > 0 ? mouseCursorSpeed : 2;
+        const hidDx = Math.max(-127, Math.min(127, rawDx * MOUSE_SENSITIVITY_MULT * speed));
+        const hidDy = Math.max(-127, Math.min(127, rawDy * MOUSE_SENSITIVITY_MULT * speed));
+        const clampedPos = clampToCircle(x, y, 162);
+
+        setVirtualCursor(clampedPos);
+        setCursorTrail((prev) => [...prev.slice(-10), clampedPos]);
+        setMouseFeedback({
+          kind: 'MOVE',
+          label: `커서 이동 (ΔX: ${hidDx > 0 ? `+${hidDx}` : hidDx}, ΔY: ${hidDy > 0 ? `+${hidDy}` : hidDy})`,
+          dx: hidDx,
+          dy: hidDy,
+          x: clampedPos.x,
+          y: clampedPos.y,
+          timestamp: Date.now(),
+        });
+      }
+    }
+  };
+
+  const handleDisplayPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const pState = pointerStateRef.current;
+    if (!pState.isDown) return;
+    pState.isDown = false;
+
+    if (displayMode === 'MOUSE') {
+      try {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // Ignore pointer capture release errors
+      }
+    }
+
+    const { x, y } = getLocalDisplayCoords(e);
+    const now = Date.now();
+    const duration = now - pState.downAtMs;
+    const totalMove = Math.hypot(x - pState.downX, y - pState.downY);
+
+    // 1. Check horizontal slot swipe in MACRO mode
+    if (displayMode === 'MACRO' && pState.isDragging) {
+      const clientDx = e.clientX - pState.downClientX;
+      const clientDy = e.clientY - pState.downClientY;
+      if (Math.abs(clientDx) > 40 && Math.abs(clientDx) > Math.abs(clientDy) && duration < 600) {
+        if (clientDx < 0) {
+          onCycleMacroSlot('NEXT');
+        } else {
+          onCycleMacroSlot('PREV');
+        }
+      }
+      pState.isDragging = false;
+      return;
+    }
+
+    // 2. If dragging or long hold occurred in MOUSE mode, end drag cleanly without any click
+    if (pState.isDragging || duration > TAP_MAX_DURATION_MS || totalMove > DRAG_THRESHOLD_PX) {
+      pState.isDragging = false;
+      return;
+    }
+
+    // 3. Valid short tap (duration <= 240ms and movement <= 8px)
+    const inCenter = isCenterSwitchZone(pState.downX, pState.downY);
+    const tBuf = tapBufferRef.current;
+    const withinTimeWindow = tBuf.count > 0 && now - tBuf.lastUpAtMs <= MULTI_TAP_WINDOW_MS;
+    const withinDistWindow = Math.hypot(pState.downX - tBuf.lastX, pState.downY - tBuf.lastY) <= MULTI_TAP_MAX_DIST_PX;
+
+    if (displayMode === 'MACRO') {
+      if (inCenter) {
+        if (tBuf.timerId !== null) {
+          window.clearTimeout(tBuf.timerId);
+          tBuf.timerId = null;
+        }
+
+        if (withinTimeWindow && tBuf.allInCenter && withinDistWindow) {
+          tBuf.count += 1;
+        } else {
+          tBuf.count = 1;
+          tBuf.allInCenter = true;
+        }
+        tBuf.lastUpAtMs = now;
+        tBuf.lastX = pState.downX;
+        tBuf.lastY = pState.downY;
+        setCenterTapProgress(tBuf.count);
+
+        if (tBuf.count >= 3) {
+          // Rapid 3-tap in center -> Switch to Mouse Mode without triggering any macro
+          clearPendingTaps();
+          setDisplayMode('MOUSE');
+          setVirtualCursor({ x: CENTER_X, y: CENTER_Y });
+          setCursorTrail([]);
+          setMouseFeedback({
+            kind: 'MODE_ENTER',
+            label: '마우스 모드 전환 완료 (중앙 3회 터치 시 매크로 모드 복귀)',
+            dx: 0,
+            dy: 0,
+            x: CENTER_X,
+            y: CENTER_Y,
+            timestamp: now,
+          });
+          return;
+        }
+
+        tBuf.timerId = window.setTimeout(() => {
+          clearPendingTaps();
+        }, MULTI_TAP_WINDOW_MS);
+      } else {
+        // Outer button tap in Macro Mode
+        clearPendingTaps();
+        const slot = hitTestCircularDisplay(pState.downX, pState.downY, profile.layout);
+        if (slot !== null) {
+          triggerSlotInteraction(slot);
+        }
+      }
+      return;
+    }
+
+    // 4. MOUSE MODE short tap handling:
+    // Buffer taps within MULTI_TAP_WINDOW_MS to cleanly discriminate 1x (Left Click), 2x (Right Click), 3x Center (Mode Exit)
+    if (tBuf.timerId !== null) {
+      window.clearTimeout(tBuf.timerId);
+      tBuf.timerId = null;
+    }
+
+    if (withinTimeWindow && withinDistWindow) {
+      tBuf.count += 1;
+      tBuf.allInCenter = tBuf.allInCenter && inCenter;
+    } else {
+      tBuf.count = 1;
+      tBuf.allInCenter = inCenter;
+    }
+    tBuf.lastUpAtMs = now;
+    tBuf.lastX = pState.downX;
+    tBuf.lastY = pState.downY;
+    setCenterTapProgress(tBuf.allInCenter ? tBuf.count : 0);
+
+    // Check immediate 3-tap in center to return to Macro Mode (suppresses any mouse click)
+    if (tBuf.count >= 3 && tBuf.allInCenter) {
+      clearPendingTaps();
+      setDisplayMode('MACRO');
+      setCursorTrail([]);
+      return;
+    }
+
+    const tapX = pState.downX;
+    const tapY = pState.downY;
+
+    tBuf.timerId = window.setTimeout(() => {
+      const resolvedCount = tapBufferRef.current.count;
+      clearPendingTaps();
+
+      const clamped = clampToCircle(tapX, tapY, 162);
+      setVirtualCursor(clamped);
+
+      if (resolvedCount === 1) {
+        spawnClickRipple(clamped.x, clamped.y, 'LEFT');
+        setMouseFeedback({
+          kind: 'LEFT_CLICK',
+          label: `마우스 좌클릭 (LEFT CLICK @ X:${clamped.x}, Y:${clamped.y})`,
+          dx: 0,
+          dy: 0,
+          x: clamped.x,
+          y: clamped.y,
+          timestamp: Date.now(),
+        });
+      } else if (resolvedCount === 2) {
+        spawnClickRipple(clamped.x, clamped.y, 'RIGHT');
+        setMouseFeedback({
+          kind: 'RIGHT_CLICK',
+          label: `마우스 우클릭 (RIGHT CLICK @ X:${clamped.x}, Y:${clamped.y})`,
+          dx: 0,
+          dy: 0,
+          x: clamped.x,
+          y: clamped.y,
+          timestamp: Date.now(),
+        });
+      }
+    }, MULTI_TAP_WINDOW_MS);
   };
 
   const activeMacroSlotIndex = profile.activeMacroSlotIndex ?? 1;
@@ -190,9 +513,27 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
 
   return (
     <div className="CircularDisplayPreview flex flex-col items-center w-full">
-      {/* Metadata line + Test Mode toggle */}
+      {/* Metadata line + Mode indicator + Test Mode toggle */}
       <div className="w-full flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 mb-3 px-1">
-        <span className="font-medium text-slate-700 truncate">{profile.name}</span>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-medium text-slate-700 truncate">{profile.name}</span>
+          <span
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono text-[11px] font-semibold ${
+              displayMode === 'MOUSE'
+                ? 'bg-cyan-950 text-cyan-300 border border-cyan-500/50'
+                : 'bg-slate-200 text-slate-700'
+            }`}
+          >
+            {displayMode === 'MOUSE' ? (
+              <>
+                <MousePointer2 className="w-3 h-3 text-cyan-400" />
+                <span>MOUSE MODE</span>
+              </>
+            ) : (
+              <span>MACRO MODE</span>
+            )}
+          </span>
+        </div>
         <div className="flex items-center gap-3 shrink-0">
           <span className="font-mono tabular-nums whitespace-nowrap">
             360×360 · {isDeviceConnected ? '기기 연결됨' : '로컬 미리보기'}
@@ -211,7 +552,7 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
         </div>
       </div>
 
-      {/* 3 Macro Slot Pagination & Swipe Navigation Bar */}
+      {/* 3 Macro Slot Pagination & Swipe Navigation Bar (Maintained intact) */}
       <div className="w-full flex items-center justify-between bg-slate-100 border border-slate-200 px-4 py-2.5 rounded-md mb-4 text-xs">
         <div className="flex items-center gap-2">
           <span className="font-semibold text-slate-800">매크로 슬롯 스와이프:</span>
@@ -258,11 +599,13 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
       {/* Physical circular smartwatch bezel frame at exact 360x360 logical coordinates */}
       <div
         className={`relative p-3.5 rounded-full bg-gradient-to-b from-slate-800 via-slate-950 to-black border transition-colors shadow-xl ${
-          activeSimulatingSlot !== null && isTestMode
-            ? 'border-amber-500 ring-2 ring-amber-400/50'
-            : isTestMode
-              ? 'border-amber-600/70'
-              : 'border-slate-800'
+          displayMode === 'MOUSE'
+            ? 'border-cyan-500/80 ring-2 ring-cyan-400/30'
+            : activeSimulatingSlot !== null && isTestMode
+              ? 'border-amber-500 ring-2 ring-amber-400/50'
+              : isTestMode
+                ? 'border-amber-600/70'
+                : 'border-slate-800'
         }`}
       >
         <div
@@ -270,13 +613,20 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
           onPointerMove={handleDisplayPointerMove}
           onPointerUp={handleDisplayPointerUp}
           onPointerLeave={() => {
-            swipeStartRef.current = null;
+            pointerStateRef.current.isDown = false;
+            pointerStateRef.current.isDragging = false;
             setHoverCoords(null);
           }}
-          onClick={handleDisplayClick}
-          className="relative w-[360px] h-[360px] rounded-full overflow-hidden select-none cursor-pointer shadow-inner touch-none"
+          onContextMenu={(e) => e.preventDefault()}
+          className={`relative w-[360px] h-[360px] rounded-full overflow-hidden select-none shadow-inner touch-none ${
+            displayMode === 'MOUSE' ? 'cursor-crosshair' : 'cursor-pointer'
+          }`}
           role="region"
-          aria-label={`360x360 원형 화면 미리보기 - ${profile.name} (슬롯 ${activeMacroSlotIndex})`}
+          aria-label={
+            displayMode === 'MOUSE'
+              ? `360x360 원형 터치패드 마우스 모드 - ${profile.name}`
+              : `360x360 원형 화면 미리보기 - ${profile.name} (슬롯 ${activeMacroSlotIndex})`
+          }
         >
           {/* Circular dial backdrop with dark indigo-purple gradient and star/sparkle decorations */}
           <svg
@@ -288,14 +638,18 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
           >
             <defs>
               <radialGradient id={`dial-bg-${uid}`} cx="50%" cy="45%" r="75%">
-                <stop offset="0%" stopColor="#311042" />
+                <stop offset="0%" stopColor={displayMode === 'MOUSE' ? '#131c38' : '#311042'} />
                 <stop offset="55%" stopColor="#1e1b4b" />
                 <stop offset="100%" stopColor="#09090b" />
               </radialGradient>
               <radialGradient id={`dial-glow-${uid}`} cx="50%" cy="32%" r="65%">
-                <stop offset="0%" stopColor="#c084fc" stopOpacity="0.18" />
-                <stop offset="60%" stopColor="#6366f1" stopOpacity="0.06" />
-                <stop offset="100%" stopColor="#000000" stopOpacity="0.35" />
+                <stop
+                  offset="0%"
+                  stopColor={displayMode === 'MOUSE' ? '#22d3ee' : '#c084fc'}
+                  stopOpacity="0.20"
+                />
+                <stop offset="60%" stopColor="#6366f1" stopOpacity="0.08" />
+                <stop offset="100%" stopColor="#000000" stopOpacity="0.40" />
               </radialGradient>
             </defs>
 
@@ -325,17 +679,182 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
               <circle cx="95" cy="180" r="0.7" opacity="0.3" />
             </g>
 
-            {/* Subtle orbital track connecting outer smartwatch bubbles */}
-            <circle
-              cx={CENTER_X}
-              cy={CENTER_Y}
-              r={ringRadius}
-              fill="none"
-              stroke="#a855f7"
-              strokeOpacity={0.15}
-              strokeWidth={1.5}
-              strokeDasharray="4 6"
-            />
+            {displayMode === 'MACRO' ? (
+              <>
+                {/* Subtle orbital track connecting outer smartwatch bubbles */}
+                <circle
+                  cx={CENTER_X}
+                  cy={CENTER_Y}
+                  r={ringRadius}
+                  fill="none"
+                  stroke="#a855f7"
+                  strokeOpacity={0.15}
+                  strokeWidth={1.5}
+                  strokeDasharray="4 6"
+                />
+
+                {/* Center 3-tap mode switch hint ring (does not block any outer buttons) */}
+                <circle
+                  cx={CENTER_X}
+                  cy={CENTER_Y}
+                  r={46}
+                  fill="#0f172a"
+                  fillOpacity={0.45}
+                  stroke={centerTapProgress > 0 ? '#22d3ee' : '#a855f7'}
+                  strokeOpacity={centerTapProgress > 0 ? 0.85 : 0.3}
+                  strokeWidth={centerTapProgress > 0 ? 1.8 : 1}
+                  strokeDasharray="3 3"
+                />
+                <text
+                  x={CENTER_X}
+                  y={CENTER_Y - 4}
+                  textAnchor="middle"
+                  fill="#cbd5e1"
+                  fillOpacity="0.65"
+                  fontSize="9"
+                  fontFamily="monospace"
+                >
+                  3x TAP
+                </text>
+                <text
+                  x={CENTER_X}
+                  y={CENTER_Y + 9}
+                  textAnchor="middle"
+                  fill="#22d3ee"
+                  fillOpacity="0.8"
+                  fontSize="8.5"
+                  fontWeight="600"
+                  fontFamily="monospace"
+                >
+                  {centerTapProgress > 0 ? `(${centerTapProgress}/3) MOUSE` : 'MOUSE MODE'}
+                </text>
+              </>
+            ) : (
+              /* MOUSE MODE full circular touchpad decorations (all pointer-events-none) */
+              <>
+                {/* Neon outer touchpad perimeter ring */}
+                <circle
+                  cx={CENTER_X}
+                  cy={CENTER_Y}
+                  r={168}
+                  fill="none"
+                  stroke="#22d3ee"
+                  strokeOpacity={0.45}
+                  strokeWidth={1.5}
+                />
+
+                {/* Mid touchpad radar ring */}
+                <circle
+                  cx={CENTER_X}
+                  cy={CENTER_Y}
+                  r={122}
+                  fill="none"
+                  stroke="#a855f7"
+                  strokeOpacity={0.22}
+                  strokeWidth={1}
+                  strokeDasharray="4 6"
+                />
+
+                {/* Subtle crosshair axis lines */}
+                <line
+                  x1={24}
+                  y1={CENTER_Y}
+                  x2={336}
+                  y2={CENTER_Y}
+                  stroke="#22d3ee"
+                  strokeOpacity={0.12}
+                  strokeWidth={1}
+                />
+                <line
+                  x1={CENTER_X}
+                  y1={24}
+                  x2={CENTER_X}
+                  y2={336}
+                  stroke="#22d3ee"
+                  strokeOpacity={0.12}
+                  strokeWidth={1}
+                />
+
+                {/* Center 3-tap return zone ring (r = 60) */}
+                <circle
+                  cx={CENTER_X}
+                  cy={CENTER_Y}
+                  r={CENTER_SWITCH_RADIUS}
+                  fill="#090d16"
+                  fillOpacity={0.35}
+                  stroke={centerTapProgress > 0 ? '#f43f5e' : '#a855f7'}
+                  strokeOpacity={centerTapProgress > 0 ? 0.9 : 0.45}
+                  strokeWidth={centerTapProgress > 0 ? 2 : 1.2}
+                  strokeDasharray="5 4"
+                />
+
+                {/* Center 3-tap return label */}
+                <text
+                  x={CENTER_X}
+                  y={CENTER_Y - 5}
+                  textAnchor="middle"
+                  fill="#e2e8f0"
+                  fillOpacity="0.7"
+                  fontSize="9.5"
+                  fontFamily="monospace"
+                >
+                  중앙 3회 터치
+                </text>
+                <text
+                  x={CENTER_X}
+                  y={CENTER_Y + 9}
+                  textAnchor="middle"
+                  fill="#c084fc"
+                  fillOpacity="0.9"
+                  fontSize="9"
+                  fontWeight="600"
+                  fontFamily="monospace"
+                >
+                  {centerTapProgress > 0 ? `복귀 (${centerTapProgress}/3)` : '매크로 모드 복귀'}
+                </text>
+
+                {/* Cursor movement trail */}
+                {cursorTrail.length > 1 && (
+                  <polyline
+                    fill="none"
+                    stroke="#22d3ee"
+                    strokeOpacity={0.45}
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    points={cursorTrail.map((pt) => `${pt.x},${pt.y}`).join(' ')}
+                  />
+                )}
+
+                {/* Click ripples */}
+                {clickRipples.map((r) => (
+                  <g key={r.id}>
+                    <circle
+                      cx={r.x}
+                      cy={r.y}
+                      r={22}
+                      fill="none"
+                      stroke={r.button === 'LEFT' ? '#22d3ee' : '#e879f9'}
+                      strokeOpacity={0.85}
+                      strokeWidth={2}
+                    />
+                    <circle
+                      cx={r.x}
+                      cy={r.y}
+                      r={10}
+                      fill={r.button === 'LEFT' ? '#22d3ee' : '#e879f9'}
+                      fillOpacity={0.25}
+                    />
+                  </g>
+                ))}
+
+                {/* Live virtual cursor indicator */}
+                <g transform={`translate(${virtualCursor.x}, ${virtualCursor.y})`}>
+                  <circle r={11} fill="none" stroke="#a855f7" strokeOpacity={0.75} strokeWidth={1.2} />
+                  <circle r={4.5} fill="#22d3ee" />
+                </g>
+              </>
+            )}
 
             {/* Outer safe bezel ring */}
             <circle
@@ -343,9 +862,15 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
               cy={CENTER_Y}
               r={174}
               fill="none"
-              stroke={isTestMode ? '#D97706' : '#475569'}
-              strokeOpacity={isTestMode ? 0.9 : 0.6}
-              strokeWidth={isTestMode ? 1.5 : 1}
+              stroke={
+                isTestMode
+                  ? '#D97706'
+                  : displayMode === 'MOUSE'
+                    ? '#22d3ee'
+                    : '#475569'
+              }
+              strokeOpacity={isTestMode || displayMode === 'MOUSE' ? 0.9 : 0.6}
+              strokeWidth={isTestMode || displayMode === 'MOUSE' ? 1.5 : 1}
             />
 
             {/* Top curved glass soft reflection */}
@@ -359,131 +884,188 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
             />
           </svg>
 
-          {/* Soft Jelly App-Icon Buttons with framer-motion whileTap */}
-          {geometries.map((geo) => {
-            const btn = profile.buttons.find((b) => b.slotIndex === geo.slotIndex);
-            if (!btn) return null;
+          {/* MOUSE MODE Overlay HUD (strictly pointer-events-none so it never blocks touch) */}
+          {displayMode === 'MOUSE' && (
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-between py-7 px-8 text-center">
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-cyan-950/90 border border-cyan-400/50 text-cyan-300 text-[11px] font-mono font-bold tracking-wider shadow-sm">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                  <span>TOUCHPAD MOUSE MODE</span>
+                </div>
+                <div className="text-[10px] font-mono text-slate-300/80">
+                  1회 터치: 좌클릭 · 2회 터치: 우클릭 · 드래그: 커서 이동
+                </div>
+              </div>
 
-            const macro = btn.macroId ? macroMap.get(btn.macroId) : undefined;
-            const isSelected = selectedSlotIndex === geo.slotIndex;
-            const isHovered = hoverCoords?.slot === geo.slotIndex;
-            const isPressed = pressedSlot === geo.slotIndex;
-            const isSimulating = activeSimulatingSlot === geo.slotIndex;
-
-            const state = !btn.enabled
-              ? 'disabled'
-              : isSimulating
-                ? 'simulating'
-                : isPressed
-                  ? 'pressed'
-                  : 'normal';
-            const palette = buildSquishyPalette(btn.accentColor, state);
-
-            const normalizedHex = (btn.accentColor || '#1E293B').trim().toUpperCase();
-            const jellyGradientClasses =
-              state === 'disabled'
-                ? 'bg-gradient-to-b from-slate-600 via-slate-800 to-slate-950 shadow-slate-950/40'
-                : state === 'simulating'
-                  ? 'bg-gradient-to-b from-amber-300 via-amber-500 to-orange-700 shadow-amber-950/60'
-                  : state === 'pressed'
-                    ? 'bg-gradient-to-b from-sky-300 via-blue-500 to-blue-800 shadow-blue-950/60'
-                    : TAILWIND_JELLY_GRADIENT_BY_HEX[normalizedHex] ?? 'bg-gradient-to-b shadow-slate-950/50';
-
-            const isCustomNonPresetHex =
-              state === 'normal' && !TAILWIND_JELLY_GRADIENT_BY_HEX[normalizedHex];
-
-            const overrideId = iconOverrides[`${profile.id}:${activeMacroSlotIndex}:${geo.slotIndex}`];
-            const iconDef = resolveButtonIcon(btn, macro, overrideId);
-
-            const iconColor = isSimulating
-              ? '#FEF3C7'
-              : palette.isNeutralDark
-                ? iconDef.cuteTint
-                : palette.isDarkSurface
-                  ? '#F8FAFC'
-                  : '#0F172A';
-
-            const sizePx = geo.buttonRadius * 2;
-            const iconSize = outerCount === 8 ? 22 : 28;
-            const displayLabel = (btn.shortLabel || btn.label).slice(0, 8);
-
-            return (
-              <motion.button
-                key={geo.slotIndex}
-                type="button"
-                whileTap={{ scale: 0.95 }}
-                whileHover={{ scale: 1.04 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  triggerSlotInteraction(geo.slotIndex);
-                }}
-                aria-label={`슬롯 ${activeMacroSlotIndex} - 버튼 ${geo.slotIndex}: ${btn.label}${macro ? ` (${macro.name})` : ' (미할당)'}`}
-                aria-pressed={isSelected}
-                style={{
-                  left: `${geo.buttonX - geo.buttonRadius}px`,
-                  top: `${geo.buttonY - geo.buttonRadius}px`,
-                  width: `${sizePx}px`,
-                  height: `${sizePx}px`,
-                  ...(isCustomNonPresetHex
-                    ? {
-                        backgroundImage: `linear-gradient(180deg, ${palette.topHex} 0%, ${palette.midHex} 52%, ${palette.bottomHex} 100%)`,
-                      }
-                    : undefined),
-                }}
-                className={`absolute rounded-full shadow-lg shadow-black/35 flex flex-col items-center justify-center gap-0.5 px-1.5 overflow-hidden select-none focus-visible:outline-none ${jellyGradientClasses} ${
-                  !btn.enabled ? 'opacity-45' : 'opacity-100'
-                } ${
-                  isSimulating
-                    ? 'ring-2 ring-amber-300 ring-offset-2 ring-offset-slate-950'
-                    : isPressed
-                      ? 'ring-2 ring-sky-300 ring-offset-2 ring-offset-slate-950'
-                      : isSelected
-                        ? 'ring-2 ring-sky-400 ring-offset-2 ring-offset-slate-950'
-                        : isHovered
-                          ? 'ring-1 ring-inset ring-white/50'
-                          : 'ring-1 ring-inset ring-white/30'
-                }`}
-              >
-                {/* Soft jelly top highlight */}
-                <span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute top-1 left-1/2 -translate-x-1/2 w-4/5 h-1/3 rounded-full bg-gradient-to-b from-white/30 via-white/10 to-transparent"
-                />
-                {/* Soft bottom inner cushion depth */}
-                <span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 rounded-b-full bg-gradient-to-t from-black/30 to-transparent"
-                />
-
-                <svg
-                  width={iconSize}
-                  height={iconSize}
-                  viewBox="0 0 32 32"
-                  className="relative z-10 shrink-0 drop-shadow-sm"
-                  aria-hidden="true"
-                >
-                  {iconDef.renderSvg(iconColor)}
-                </svg>
-
-                <span
-                  className={`relative z-10 font-semibold leading-tight tracking-tight truncate max-w-full ${
-                    outerCount === 8 ? 'text-[8.5px]' : 'text-[10px]'
-                  } ${
-                    palette.isDarkSurface
-                      ? macro
-                        ? 'text-slate-50'
-                        : 'text-slate-300'
-                      : 'text-slate-900'
+              <div className="space-y-0.5">
+                <div
+                  className={`inline-block px-3 py-1 rounded-full text-[10px] font-mono font-semibold border ${
+                    mouseFeedback.kind === 'LEFT_CLICK'
+                      ? 'bg-cyan-950/90 border-cyan-400 text-cyan-200'
+                      : mouseFeedback.kind === 'RIGHT_CLICK'
+                        ? 'bg-purple-950/90 border-purple-400 text-purple-200'
+                        : mouseFeedback.kind === 'MOVE'
+                          ? 'bg-slate-900/90 border-cyan-500/40 text-cyan-300'
+                          : 'bg-slate-900/80 border-slate-700 text-slate-300'
                   }`}
                 >
-                  {isSimulating ? 'TEST' : displayLabel}
-                </span>
-              </motion.button>
-            );
-          })}
+                  {mouseFeedback.kind === 'LEFT_CLICK'
+                    ? 'LEFT CLICK (좌클릭)'
+                    : mouseFeedback.kind === 'RIGHT_CLICK'
+                      ? 'RIGHT CLICK (우클릭)'
+                      : mouseFeedback.kind === 'MOVE'
+                        ? `MOVE Δ(${mouseFeedback.dx}, ${mouseFeedback.dy})`
+                        : 'READY · FULL 360×360 TOUCHPAD'}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Soft Jelly App-Icon Buttons (Rendered ONLY in MACRO mode; hidden in MOUSE mode) */}
+          {displayMode === 'MACRO' &&
+            geometries.map((geo) => {
+              const btn = profile.buttons.find((b) => b.slotIndex === geo.slotIndex);
+              if (!btn) return null;
+
+              const macro = btn.macroId ? macroMap.get(btn.macroId) : undefined;
+              const isSelected = selectedSlotIndex === geo.slotIndex;
+              const isHovered = hoverCoords?.slot === geo.slotIndex;
+              const isPressed = pressedSlot === geo.slotIndex;
+              const isSimulating = activeSimulatingSlot === geo.slotIndex;
+
+              const state = !btn.enabled
+                ? 'disabled'
+                : isSimulating
+                  ? 'simulating'
+                  : isPressed
+                    ? 'pressed'
+                    : 'normal';
+              const palette = buildSquishyPalette(btn.accentColor, state);
+
+              const normalizedHex = (btn.accentColor || '#1E293B').trim().toUpperCase();
+              const jellyGradientClasses =
+                state === 'disabled'
+                  ? 'bg-gradient-to-b from-slate-600 via-slate-800 to-slate-950 shadow-slate-950/40'
+                  : state === 'simulating'
+                    ? 'bg-gradient-to-b from-amber-300 via-amber-500 to-orange-700 shadow-amber-950/60'
+                    : state === 'pressed'
+                      ? 'bg-gradient-to-b from-sky-300 via-blue-500 to-blue-800 shadow-blue-950/60'
+                      : TAILWIND_JELLY_GRADIENT_BY_HEX[normalizedHex] ?? 'bg-gradient-to-b shadow-slate-950/50';
+
+              const isCustomNonPresetHex =
+                state === 'normal' && !TAILWIND_JELLY_GRADIENT_BY_HEX[normalizedHex];
+
+              const overrideId = iconOverrides[`${profile.id}:${activeMacroSlotIndex}:${geo.slotIndex}`];
+              const iconDef = resolveButtonIcon(btn, macro, overrideId);
+
+              const iconColor = isSimulating
+                ? '#FEF3C7'
+                : palette.isNeutralDark
+                  ? iconDef.cuteTint
+                  : palette.isDarkSurface
+                    ? '#F8FAFC'
+                    : '#0F172A';
+
+              const sizePx = geo.buttonRadius * 2;
+              const iconSize = outerCount === 8 ? 22 : 28;
+              const displayLabel = (btn.shortLabel || btn.label).slice(0, 8);
+
+              return (
+                <motion.button
+                  key={geo.slotIndex}
+                  type="button"
+                  whileTap={{ scale: 0.95 }}
+                  whileHover={{ scale: 1.04 }}
+                  transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    clearPendingTaps();
+                    triggerSlotInteraction(geo.slotIndex);
+                  }}
+                  aria-label={`슬롯 ${activeMacroSlotIndex} - 버튼 ${geo.slotIndex}: ${btn.label}${macro ? ` (${macro.name})` : ' (미할당)'}`}
+                  aria-pressed={isSelected}
+                  style={{
+                    left: `${geo.buttonX - geo.buttonRadius}px`,
+                    top: `${geo.buttonY - geo.buttonRadius}px`,
+                    width: `${sizePx}px`,
+                    height: `${sizePx}px`,
+                    ...(isCustomNonPresetHex
+                      ? {
+                          backgroundImage: `linear-gradient(180deg, ${palette.topHex} 0%, ${palette.midHex} 52%, ${palette.bottomHex} 100%)`,
+                        }
+                      : undefined),
+                  }}
+                  className={`absolute rounded-full shadow-lg shadow-black/35 flex flex-col items-center justify-center gap-0.5 px-1.5 overflow-hidden select-none focus-visible:outline-none ${jellyGradientClasses} ${
+                    !btn.enabled ? 'opacity-45' : 'opacity-100'
+                  } ${
+                    isSimulating
+                      ? 'ring-2 ring-amber-300 ring-offset-2 ring-offset-slate-950'
+                      : isPressed
+                        ? 'ring-2 ring-sky-300 ring-offset-2 ring-offset-slate-950'
+                        : isSelected
+                          ? 'ring-2 ring-sky-400 ring-offset-2 ring-offset-slate-950'
+                          : isHovered
+                            ? 'ring-1 ring-inset ring-white/50'
+                            : 'ring-1 ring-inset ring-white/30'
+                  }`}
+                >
+                  {/* Soft jelly top highlight */}
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-1 left-1/2 -translate-x-1/2 w-4/5 h-1/3 rounded-full bg-gradient-to-b from-white/30 via-white/10 to-transparent"
+                  />
+                  {/* Soft bottom inner cushion depth */}
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 rounded-b-full bg-gradient-to-t from-black/30 to-transparent"
+                  />
+
+                  <svg
+                    width={iconSize}
+                    height={iconSize}
+                    viewBox="0 0 32 32"
+                    className="relative z-10 shrink-0 drop-shadow-sm"
+                    aria-hidden="true"
+                  >
+                    {iconDef.renderSvg(iconColor)}
+                  </svg>
+
+                  <span
+                    className={`relative z-10 font-semibold leading-tight tracking-tight truncate max-w-full ${
+                      outerCount === 8 ? 'text-[8.5px]' : 'text-[10px]'
+                    } ${
+                      palette.isDarkSurface
+                        ? macro
+                          ? 'text-slate-50'
+                          : 'text-slate-300'
+                        : 'text-slate-900'
+                    }`}
+                  >
+                    {isSimulating ? 'TEST' : displayLabel}
+                  </span>
+                </motion.button>
+              );
+            })}
         </div>
       </div>
+
+      {/* Live Visual Response Bar for Mouse Mode */}
+      {displayMode === 'MOUSE' && (
+        <div className="w-full mt-3 px-3.5 py-2.5 rounded-md border bg-slate-900 border-cyan-500/40 text-cyan-100 text-xs">
+          <div className="flex items-center justify-between gap-2 font-semibold">
+            <span className="text-cyan-300 flex items-center gap-1.5">
+              <MousePointer2 className="w-3.5 h-3.5" />
+              <span>USB HID 마우스 모드 활성 (360×360 원형 터치패드)</span>
+            </span>
+            <span className="font-mono text-[11px] text-purple-300">
+              중앙 3회 연속 터치 → 매크로 복귀
+            </span>
+          </div>
+          <div className="mt-1 font-mono text-xs text-slate-300 truncate">
+            {mouseFeedback.label}
+          </div>
+        </div>
+      )}
 
       {/* Live Visual Response Bar for Macro / Test Mode */}
       {visualFeedback && (
@@ -521,7 +1103,19 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
           {hoverCoords ? (
             <span>
               X:{String(hoverCoords.x).padStart(3, '0')} · Y:{String(hoverCoords.y).padStart(3, '0')} ·{' '}
-              {hoverCoords.slot !== null ? `슬롯 ${hoverCoords.slot}` : '영역 외'}
+              {displayMode === 'MOUSE'
+                ? isCenterSwitchZone(hoverCoords.x, hoverCoords.y)
+                  ? '터치패드 (중앙 3x 전환 영역)'
+                  : '터치패드 영역'
+                : hoverCoords.slot !== null
+                  ? `슬롯 ${hoverCoords.slot}`
+                  : isCenterSwitchZone(hoverCoords.x, hoverCoords.y)
+                    ? '중앙 (3x 터치: 마우스 모드)'
+                    : '영역 외'}
+            </span>
+          ) : displayMode === 'MOUSE' ? (
+            <span>
+              마우스 모드 · 커서 X:{String(virtualCursor.x).padStart(3, '0')} Y:{String(virtualCursor.y).padStart(3, '0')}
             </span>
           ) : (
             <span>
@@ -530,7 +1124,7 @@ export const CircularDisplayPreview: React.FC<CircularDisplayPreviewProps> = ({
           )}
         </div>
 
-        {selectedMacro && onTriggerPreviewMacro && (
+        {displayMode === 'MACRO' && selectedMacro && onTriggerPreviewMacro && (
           <button
             type="button"
             onClick={() => onTriggerPreviewMacro(selectedSlotIndex, selectedMacro)}

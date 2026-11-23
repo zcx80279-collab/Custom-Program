@@ -246,6 +246,7 @@ export function createDefaultConfig(): AppConfig {
       hidPreferredWhenAvailable: true,
       macroTestMode: false,
       slotTransitionMode: SlotTransitionMode.CIRCULAR,
+      mouseCursorSpeed: 2,
     },
     lastModifiedAt: now,
     lastAppliedToDeviceAt: null,
