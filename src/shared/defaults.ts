@@ -76,6 +76,7 @@ export function createDefaultConfig(): AppConfig {
       name: '복사 (Ctrl+C)',
       description: '선택 항목을 클립보드에 복사합니다. 기기 단독 USB HID 실행 가능.',
       executionMode: MacroExecutionMode.DEVICE_HID,
+      category: '일반',
       steps: [
         { id: 'st-1', type: MacroStepType.KEY_COMBO, key: 'KeyC', modifiers: ['CTRL'] },
       ],
@@ -87,6 +88,7 @@ export function createDefaultConfig(): AppConfig {
       name: '붙여넣기 (Ctrl+V)',
       description: '클립보드 내용을 붙여넣습니다. 기기 단독 USB HID 실행 가능.',
       executionMode: MacroExecutionMode.DEVICE_HID,
+      category: '일반',
       steps: [
         { id: 'st-2', type: MacroStepType.KEY_COMBO, key: 'KeyV', modifiers: ['CTRL'] },
       ],
@@ -98,6 +100,7 @@ export function createDefaultConfig(): AppConfig {
       name: '실행 취소 (Ctrl+Z)',
       description: '직전 작업을 취소합니다.',
       executionMode: MacroExecutionMode.DEVICE_HID,
+      category: '일반',
       steps: [
         { id: 'st-3', type: MacroStepType.KEY_COMBO, key: 'KeyZ', modifiers: ['CTRL'] },
       ],
@@ -109,6 +112,7 @@ export function createDefaultConfig(): AppConfig {
       name: '전체 저장 후 실행 (시퀀스)',
       description: 'Ctrl+S 후 250ms 대기, F5를 순차 실행합니다.',
       executionMode: MacroExecutionMode.HYBRID,
+      category: '개발',
       steps: [
         { id: 'st-4a', type: MacroStepType.KEY_COMBO, key: 'KeyS', modifiers: ['CTRL'] },
         { id: 'st-4b', type: MacroStepType.DELAY, delayMs: 250 },
@@ -122,6 +126,7 @@ export function createDefaultConfig(): AppConfig {
       name: '화면 캡처 (Win+Shift+S)',
       description: 'Windows 캡처 도구를 호출합니다. PC 프로그램 경유 실행 예시.',
       executionMode: MacroExecutionMode.PC_AGENT,
+      category: '시스템',
       steps: [
         { id: 'st-5', type: MacroStepType.KEY_COMBO, key: 'KeyS', modifiers: ['WIN', 'SHIFT'] },
       ],
@@ -133,6 +138,7 @@ export function createDefaultConfig(): AppConfig {
       name: '시스템 음소거',
       description: 'Windows 오디오 음소거 토글 (PC 실행 방식 권장).',
       executionMode: MacroExecutionMode.PC_AGENT,
+      category: '시스템',
       steps: [
         { id: 'st-6', type: MacroStepType.KEY_TAP, key: 'VolumeMute' },
       ],

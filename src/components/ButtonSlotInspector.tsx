@@ -1,5 +1,5 @@
 import React from 'react';
-import { SlidersHorizontal } from 'lucide-react';
+import { ClipboardPaste, Copy, SlidersHorizontal } from 'lucide-react';
 import {
   CircularButtonConfig,
   LayoutPreset,
@@ -15,11 +15,14 @@ interface ButtonSlotInspectorProps {
   selectedButton: CircularButtonConfig;
   macros: MacroDefinition[];
   macroEngine: MacroEngine;
+  copiedButtonSlot: CircularButtonConfig | null;
   onUpdateButton: (slotIndex: number, patch: Partial<CircularButtonConfig>) => void;
   onAssignMacro: (slotIndex: number, macroId: string | null) => void;
   onChangeLayout: (layout: LayoutPreset) => void;
   onSwitchMacroSlot: (profileId: string, slotIndex: number) => void;
   onJumpToMacroEditor: () => void;
+  onCopySlot: (button: CircularButtonConfig) => void;
+  onPasteSlot: (slotIndex: number) => void;
 }
 
 const COLOR_SWATCHES = [
@@ -44,11 +47,14 @@ export const ButtonSlotInspector: React.FC<ButtonSlotInspectorProps> = ({
   selectedButton,
   macros,
   macroEngine,
+  copiedButtonSlot,
   onUpdateButton,
   onAssignMacro,
   onChangeLayout,
   onSwitchMacroSlot,
   onJumpToMacroEditor,
+  onCopySlot,
+  onPasteSlot,
 }) => {
   const assignedMacro = selectedButton.macroId
     ? macros.find((m) => m.id === selectedButton.macroId)
@@ -93,6 +99,36 @@ export const ButtonSlotInspector: React.FC<ButtonSlotInspectorProps> = ({
             );
           })}
         </div>
+      </div>
+
+      {/* Copy / Paste Slot Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-slate-50 border border-slate-200 rounded-md">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onCopySlot(selectedButton)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-100 shadow-sm transition-colors whitespace-nowrap"
+          >
+            <Copy className="w-3.5 h-3.5 text-slate-500" />
+            <span>이 슬롯 복사</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!copiedButtonSlot}
+            onClick={() => onPasteSlot(selectedButton.slotIndex)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 disabled:opacity-40 shadow-sm transition-colors whitespace-nowrap"
+          >
+            <ClipboardPaste className="w-3.5 h-3.5" />
+            <span>다른 슬롯에 붙여넣기</span>
+          </button>
+        </div>
+
+        {copiedButtonSlot && (
+          <div className="text-[11px] text-slate-600 font-mono truncate max-w-[220px]">
+            클립보드: #{copiedButtonSlot.slotIndex} ({copiedButtonSlot.label})
+          </div>
+        )}
       </div>
 
       <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-200">

@@ -132,6 +132,15 @@ export class MacroEngine {
 
     let totalDelayMs = 0;
     macro.steps.forEach((step, idx) => {
+      if (step.delayAfterMs !== undefined) {
+        const afterMs = Number(step.delayAfterMs);
+        if (!Number.isFinite(afterMs) || afterMs < 0 || afterMs > 5000) {
+          errors.push(`${idx + 1}단계: 실행 후 지연 시간은 0ms~5,000ms 사이여야 합니다.`);
+        } else {
+          totalDelayMs += afterMs;
+        }
+      }
+
       if (step.type === MacroStepType.DELAY) {
         const ms = Number(step.delayMs);
         if (!Number.isFinite(ms) || ms < 10 || ms > 10000) {

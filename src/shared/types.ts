@@ -84,6 +84,8 @@ export interface MacroStep {
   modifiers?: ModifierKey[];
   /** Delay duration in milliseconds (10 - 10000ms) */
   delayMs?: number;
+  /** Optional post-step execution delay in milliseconds (0 - 5000ms) */
+  delayAfterMs?: number;
   /** Display name of Windows program (for LAUNCH_APP) */
   appName?: string;
   /** Full Windows executable (.exe) path (for LAUNCH_APP, stored on PC only) */
@@ -99,6 +101,7 @@ export interface MacroDefinition {
   name: string;
   description: string;
   executionMode: MacroExecutionMode;
+  category?: string;
   steps: MacroStep[];
   createdAt: string;
   updatedAt: string;

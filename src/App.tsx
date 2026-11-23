@@ -26,6 +26,7 @@ import { PresetDraft, PresetManager } from './modules/PresetManager';
 import { MacroEngine, MacroTestVisualEvent } from './modules/MacroEngine';
 import { DisplayManager } from './modules/DisplayManager';
 import { DeviceManager, DeviceSnapshot } from './modules/DeviceManager';
+import { UpdateManager, ReleaseInfo } from './modules/UpdateManager';
 
 import { CircularDisplayPreview } from './components/CircularDisplayPreview';
 import { ButtonSlotInspector } from './components/ButtonSlotInspector';
@@ -36,6 +37,7 @@ import { PresetPanel } from './components/PresetPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { DiagnosticsPanel } from './components/DiagnosticsPanel';
 import { ResetConfirmModal } from './components/ResetConfirmModal';
+import { UpdateModal } from './components/UpdateModal';
 
 type NavSection = 'preview' | 'presets' | 'device' | 'macros' | 'profiles' | 'config' | 'diagnostics';
 
@@ -89,6 +91,7 @@ export function App() {
   const [storageSource, setStorageSource] = useState<'ELECTRON_FS' | 'LOCAL_STORAGE' | 'DEFAULT'>('DEFAULT');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [selectedSlotIndex, setSelectedSlotIndex] = useState<number>(1);
+  const [copiedButtonSlot, setCopiedButtonSlot] = useState<CircularButtonConfig | null>(null);
 
   const [deviceSnapshot, setDeviceSnapshot] = useState<DeviceSnapshot>(() => deviceManager.getSnapshot());
   const [isTestMode, setIsTestMode] = useState<boolean>(() => macroEngine.isTestMode());
@@ -98,6 +101,50 @@ export function App() {
   const [resetInProgress, setResetInProgress] = useState(false);
   const [toast, setToast] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
+  const updateManager = useRef(new UpdateManager('2.2.0')).current;
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'uptodate' | 'error'>('idle');
+  const [latestRelease, setLatestRelease] = useState<ReleaseInfo | undefined>(undefined);
+  const [latestVersion, setLatestVersion] = useState<string>('2.2.0');
+  const [updateModalOpen, setUpdateModalOpen] = useState<boolean>(false);
+
+  // Check for updates on startup
+  useEffect(() => {
+    let mounted = true;
+    setUpdateStatus('checking');
+    updateManager.checkForUpdates().then((res) => {
+      if (!mounted) return;
+      if (res.hasUpdate && res.release) {
+        setUpdateStatus('available');
+        setLatestRelease(res.release);
+        setLatestVersion(res.latestVersion);
+      } else if (res.error) {
+        setUpdateStatus('error');
+      } else {
+        setUpdateStatus('uptodate');
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [updateManager]);
+
+  const handleCheckForUpdates = async () => {
+    setUpdateStatus('checking');
+    const res = await updateManager.checkForUpdates();
+    if (res.hasUpdate && res.release) {
+      setUpdateStatus('available');
+      setLatestRelease(res.release);
+      setLatestVersion(res.latestVersion);
+      showToast('ok', `새로운 버전 v${res.latestVersion}이 있습니다!`);
+    } else if (res.error) {
+      setUpdateStatus('error');
+      showToast('err', res.error);
+    } else {
+      setUpdateStatus('uptodate');
+      showToast('ok', `현재 최신 버전(v2.2.0)을 사용 중입니다.`);
+    }
+  };
+
   const configRef = useRef(config);
   configRef.current = config;
 
@@ -106,6 +153,19 @@ export function App() {
     setTimeout(() => {
       setToast((prev) => (prev?.text === text ? null : prev));
     }, 4000);
+  };
+
+  const handleCopySlot = (button: CircularButtonConfig) => {
+    setCopiedButtonSlot({ ...button });
+    showToast('ok', `버튼 #${button.slotIndex} (${button.label}) 설정 및 매크로를 복사했습니다.`);
+  };
+
+  const handlePasteSlot = (targetSlotIndex: number) => {
+    if (!copiedButtonSlot) return;
+    mutateConfig(
+      profileManager.pasteButtonSettings(config, activeProfile.id, targetSlotIndex, copiedButtonSlot)
+    );
+    showToast('ok', `버튼 #${copiedButtonSlot.slotIndex} 설정을 버튼 #${targetSlotIndex}에 붙여넣었습니다.`);
   };
 
   // Load persisted PC config and subscribe to DeviceManager + DiagnosticsManager
@@ -403,8 +463,22 @@ export function App() {
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
       {/* Top Bar Contract: Single row, 3 zones (Wordmark | Breadcrumb + Active Profile | Primary CTA) */}
       <header className="h-14 px-6 bg-white border-b border-slate-200 flex items-center justify-between gap-8 shrink-0">
-        <div className="text-base font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
-          RoundMacroController V2
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="text-base font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 flex items-center gap-2">
+            <span>RoundMacroController V2</span>
+            <span className="text-[11px] font-normal text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md font-mono">v2.2.0</span>
+            {updateStatus === 'available' && (
+              <button
+                type="button"
+                onClick={() => setUpdateModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-full animate-pulse transition-colors shadow-xs"
+                title={`새로운 버전 v${latestVersion}이 있습니다. 클릭하여 확인하세요.`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
+                <span>업데이트 v{latestVersion}</span>
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="hidden md:flex items-center gap-2 text-xs text-slate-500 truncate">
@@ -639,6 +713,7 @@ export function App() {
                       selectedButton={selectedButton}
                       macros={config.macros}
                       macroEngine={macroEngine}
+                      copiedButtonSlot={copiedButtonSlot}
                       onUpdateButton={(slotIdx: number, patch: Partial<CircularButtonConfig>) =>
                         mutateConfig(
                           profileManager.updateButton(config, activeProfile.id, slotIdx, patch)
@@ -658,6 +733,8 @@ export function App() {
                         mutateConfig(profileManager.switchMacroSlot(config, profileId, slotIdx))
                       }
                       onJumpToMacroEditor={() => setActiveNav('macros')}
+                      onCopySlot={handleCopySlot}
+                      onPasteSlot={handlePasteSlot}
                     />
                   </div>
                 </div>
@@ -849,6 +926,11 @@ export function App() {
                 isDeviceConnected={isDeviceConnected}
                 displayManager={displayManager}
                 hasUnsavedChanges={hasUnsavedChanges}
+                updateStatus={updateStatus}
+                currentVersion="2.2.0"
+                latestVersion={latestVersion}
+                onCheckForUpdates={handleCheckForUpdates}
+                onOpenUpdateModal={() => setUpdateModalOpen(true)}
                 onSavePcConfig={handleSavePcConfig}
                 onReloadPcConfig={async () => {
                   const { config: loaded, source } = await configManager.load();
@@ -902,6 +984,15 @@ export function App() {
         isProcessing={resetInProgress}
         onCancel={() => setResetModalOpen(false)}
         onConfirmReset={handleConfirmResetDevice}
+      />
+
+      {/* Update Notification Modal */}
+      <UpdateModal
+        open={updateModalOpen}
+        currentVersion="2.2.0"
+        latestVersion={latestVersion}
+        release={latestRelease}
+        onClose={() => setUpdateModalOpen(false)}
       />
     </div>
   );

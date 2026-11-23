@@ -279,4 +279,26 @@ export class ProfileManager {
     );
     return this.updateButton(config, profileId, slotIndex, { macroId });
   }
+
+  public pasteButtonSettings(
+    config: AppConfig,
+    profileId: string,
+    targetSlotIndex: number,
+    sourceButton: CircularButtonConfig
+  ): AppConfig {
+    const activeProfile = config.profiles.find((p) => p.id === profileId) ?? config.profiles[0];
+    const slotPageIndex = activeProfile.activeMacroSlotIndex;
+    this.diagnostics.log(
+      LogLevel.INFO,
+      'ProfileManager',
+      `[슬롯 페이지 ${slotPageIndex}] 버튼 #${sourceButton.slotIndex} 설정을 버튼 #${targetSlotIndex}에 붙여넣기`
+    );
+    return this.updateButton(config, profileId, targetSlotIndex, {
+      label: sourceButton.label,
+      shortLabel: sourceButton.shortLabel,
+      accentColor: sourceButton.accentColor,
+      macroId: sourceButton.macroId,
+      enabled: sourceButton.enabled,
+    });
+  }
 }

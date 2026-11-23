@@ -5,6 +5,7 @@ import {
   RotateCcw,
   Save,
   Send,
+  Sparkles,
   Upload,
 } from 'lucide-react';
 import { AppConfig, SlotTransitionMode } from '../shared/types';
@@ -16,6 +17,11 @@ interface ConfigPanelProps {
   isDeviceConnected: boolean;
   displayManager: DisplayManager;
   hasUnsavedChanges: boolean;
+  updateStatus: 'idle' | 'checking' | 'available' | 'uptodate' | 'error';
+  currentVersion: string;
+  latestVersion: string;
+  onCheckForUpdates: () => void;
+  onOpenUpdateModal: () => void;
   onSavePcConfig: () => Promise<{ ok: boolean; error?: string }>;
   onReloadPcConfig: () => Promise<void>;
   onExportJson: () => void;
@@ -31,6 +37,11 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   isDeviceConnected,
   displayManager,
   hasUnsavedChanges,
+  updateStatus,
+  currentVersion,
+  latestVersion,
+  onCheckForUpdates,
+  onOpenUpdateModal,
   onSavePcConfig,
   onReloadPcConfig,
   onExportJson,
@@ -116,6 +127,55 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
               ? new Date(config.lastAppliedToDeviceAt).toLocaleString('ko-KR')
               : '적용 이력 없음'}
           </div>
+        </div>
+      </div>
+
+      {/* App Version & Update Check Card */}
+      <div className="p-5 bg-white border border-slate-200 rounded-md space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900">애플리케이션 버전 및 업데이트</h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              GitHub 릴리스 API를 통해 최신 버전 및 릴리스 노트를 확인합니다.
+            </p>
+          </div>
+          <span className="text-xs font-mono font-medium px-2.5 py-1 bg-slate-100 text-slate-700 rounded-md">
+            v{currentVersion}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 pt-1">
+          <button
+            type="button"
+            disabled={updateStatus === 'checking'}
+            onClick={onCheckForUpdates}
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 disabled:opacity-50 transition-colors"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+            <span>{updateStatus === 'checking' ? '업데이트 확인 중...' : '새 버전 확인'}</span>
+          </button>
+
+          {updateStatus === 'available' && (
+            <button
+              type="button"
+              onClick={onOpenUpdateModal}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors animate-pulse"
+            >
+              <span>새 버전 v{latestVersion} 업데이트 있음</span>
+            </button>
+          )}
+
+          {updateStatus === 'uptodate' && (
+            <span className="text-xs text-emerald-700 font-medium">
+              최신 버전을 사용 중입니다 (v{currentVersion}).
+            </span>
+          )}
+
+          {updateStatus === 'error' && (
+            <span className="text-xs text-amber-700">
+              업데이트 확인 중 네트워크 오류가 발생했습니다.
+            </span>
+          )}
         </div>
       </div>
 

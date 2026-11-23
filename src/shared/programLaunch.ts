@@ -231,6 +231,11 @@ export function macroHasLaunchApp(macro: Pick<MacroDefinition, 'steps'>): boolea
  * for seamless backward compatibility.
  */
 export function normalizeMacroStep(step: MacroStep): MacroStep {
+  const delayAfterMs =
+    typeof step.delayAfterMs === 'number' && Number.isFinite(step.delayAfterMs) && step.delayAfterMs > 0
+      ? Math.min(5000, Math.max(0, step.delayAfterMs))
+      : undefined;
+
   if (step.type !== MacroStepType.LAUNCH_APP) {
     return {
       id: step.id,
@@ -238,6 +243,7 @@ export function normalizeMacroStep(step: MacroStep): MacroStep {
       ...(step.key !== undefined ? { key: step.key } : {}),
       ...(step.modifiers !== undefined ? { modifiers: [...step.modifiers] } : {}),
       ...(step.delayMs !== undefined ? { delayMs: step.delayMs } : {}),
+      ...(delayAfterMs !== undefined ? { delayAfterMs } : {}),
     };
   }
 
@@ -270,6 +276,7 @@ export function normalizeMacroStep(step: MacroStep): MacroStep {
     appPath,
     ...(normalizedArgs.length > 0 ? { appArgs: normalizedArgs } : {}),
     ...(workingDir ? { workingDir } : {}),
+    ...(delayAfterMs !== undefined ? { delayAfterMs } : {}),
   };
 }
 
